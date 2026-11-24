@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Split recent GitHub Actions jobs into queue, setup and run time.
+
+Usage: ci-timings OWNER/REPO [--runs N] [--branch B] [--event E] [--steps] [--json]
+
+Reads the last N completed runs with `gh api`. For each job it reports:
+  queue  created_at -> started_at (waiting for a runner)
+  setup  steps that prepare the job (set up, checkout, toolchain, cache, install)
+  run    every other step
+A long setup on a cache-backed install usually means a cache miss.
+The summary groups jobs by workflow/job name and prints p50 and p90 seconds,
+plus the critical path (the slowest job per run, which is what a PR waits for).
+"""
+
+import argparse
+import json
+import re
+import statistics
+import subprocess
+import sys
+from collections import defaultdict
+from datetime import datetime
+
+SETUP = re.compile(
+    r"^(run )?(set up job|complete job|post |actions/checkout|checkout|"
+    r"actions/setup-|setup|set up |install|npm (ci|install)|pnpm install|"
+    r"bun install|yarn( install)?$|uv sync|pip install|restore|cache|actions/cache|"
+    r"initialize containers|stop containers)",
+    re.IGNORECASE,
+)
+
+
+def gh(path):
+    out = subprocess.run(
+        ["gh", "api", "-H", "Accept: application/vnd.github+json", path],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    return json.loads(out)
+
+
+def ts(value):
+    return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
+
+
+def secs(a, b):
+    return max(0.0, (b - a).total_seconds()) if a and b else 0.0
+
+
+def pct(values, q):
+    if not values:
+        return 0
+    values = sorted(values)
+    return round(values[min(len(values) - 1, int(q * len(values)))])
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("repo")
+    p.add_argument("--runs", type=int, default=50)
+    p.add_argument("--branch")
+    p.add_argument("--event", help="pull_request, push, schedule ...")
+    p.add_argument("--steps", action="store_true", help="also print p50/p90 per step")
+    p.add_argument("--json", action="store_true", help="print one JSON row per job")
+    a = p.parse_args()
+
+    query = f"repos/{a.repo}/actions/runs?status=completed&per_page={min(a.runs, 100)}"
+    if a.branch:
+        query += f"&branch={a.branch}"
+    if a.event:
+        query += f"&event={a.event}"
+    runs = gh(query)["workflow_runs"][: a.runs]
+
+    rows, critical, steps = [], defaultdict(list), defaultdict(list)
+    for run in runs:
+        jobs = gh(f"repos/{a.repo}/actions/runs/{run['id']}/jobs?per_page=100")["jobs"]
+        slowest = 0.0
+        for job in jobs:
+            if job.get("conclusion") == "skipped" or not job.get("started_at"):
+                continue
+            queue = secs(ts(job["created_at"]), ts(job["started_at"]))
+            setup = run_s = 0.0
+            for step in job.get("steps") or []:
+                d = secs(ts(step.get("started_at")), ts(step.get("completed_at")))
+                steps[(run["name"], job["name"], step["number"], step["name"])].append(d)
+                if SETUP.match(step["name"]):
+                    setup += d
+                else:
+                    run_s += d
+            total = queue + secs(ts(job["started_at"]), ts(job["completed_at"]))
+            slowest = max(slowest, total)
+            rows.append({
+                "run": run["id"], "event": run["event"], "branch": run["head_branch"],
+                "workflow": run["name"], "job": job["name"], "runner": job.get("runner_name"),
+                "labels": job.get("labels"), "conclusion": job.get("conclusion"),
+                "queue": round(queue), "setup": round(setup), "run_s": round(run_s),
+                "total": round(total),
+            })
+        critical[run["name"]].append(secs(ts(run["created_at"]), ts(run["updated_at"])))
+
+    if a.json:
+        for row in rows:
+            print(json.dumps(row))
+        return
+
+    groups = defaultdict(list)
+    for row in rows:
+        groups[(row["workflow"], row["job"])].append(row)
+    print(f"{a.repo}: {len(runs)} runs, {len(rows)} jobs")
+    print(f"{'workflow / job':48} {'n':>4} {'queue p50/p90':>14} {'setup p50/p90':>14} "
+          f"{'run p50/p90':>12} {'fail':>5}")
+    for (wf, job), items in sorted(groups.items(), key=lambda kv: -sum(r["total"] for r in kv[1])):
+        q = [r["queue"] for r in items]
+        s = [r["setup"] for r in items]
+        r_ = [r["run_s"] for r in items]
+        fails = sum(1 for r in items if r["conclusion"] not in ("success", "skipped"))
+        name = f"{wf} / {job}"[:48]
+        print(f"{name:48} {len(items):>4} {pct(q, .5):>6}/{pct(q, .9):<7} "
+              f"{pct(s, .5):>6}/{pct(s, .9):<7} {pct(r_, .5):>5}/{pct(r_, .9):<6} {fails:>5}")
+    if a.steps:
+        print("\nSteps (p50/p90 seconds, slowest first):")
+        for (wf, job, _, name), values in sorted(steps.items(), key=lambda kv: -pct(kv[1], .5)):
+            if pct(values, .9) >= 2:
+                print(f"  {pct(values, .5):>5}/{pct(values, .9):<5} {wf} / {job} / {name}"[:110])
+    print("\nWall clock per workflow run (what a PR waits for):")
+    for wf, values in sorted(critical.items()):
+        print(f"  {wf[:46]:46} p50 {pct(values, .5):>5}s  p90 {pct(values, .9):>5}s  "
+              f"mean {round(statistics.mean(values)):>5}s  n={len(values)}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except subprocess.CalledProcessError as err:
+        sys.exit(err.stderr or str(err))

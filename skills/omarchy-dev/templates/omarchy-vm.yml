@@ -1,0 +1,124 @@
+name: Omarchy VM
+
+# Runs this repository's tests on a real Omarchy install, the way
+# omacom/omarchy runs its own (.github/workflows/test.yml, test/ci-vm): the VM
+# image of each channel, booted fresh for the run, with this checkout copied
+# in, tested in the desktop session. Nothing it runs holds a secret, so a
+# fork's pull request runs the same way as ours.
+#
+# To adopt: copy omarchy-vm to test/omarchy-vm, give the repository a
+# test/all that runs in the VM. Add a paths filter if only some files reach
+# the desktop.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: omarchy-vm-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # stable is what upstream CI tests; edge is the next release.
+        channel: [stable, edge]
+    env:
+      CHANNEL: ${{ matrix.channel }}
+      REPO: ${{ github.event.repository.name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: src/${{ github.event.repository.name }}
+          persist-credentials: false
+
+      - name: Install the fetch tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends aria2 jq
+
+      # Public repositories get 4-vCPU, 16 GB runners; private ones get 2 vCPUs
+      # and 8 GB, whose /dev/shm cannot hold the image. Fit the run to the
+      # runner: the image in RAM when it fits with room to spare, as upstream
+      # does, else on the runner's disk; the VM gets the runner's CPUs and its
+      # memory less 2 GB, at most 6 GB as upstream.
+      - name: Size the VM to the runner
+        run: |
+          test -e /dev/kvm || { echo "::error::this runner has no /dev/kvm"; exit 1; }
+          size=$(curl -fsS --retry 3 "https://nightly.omarchy.org/$CHANNEL/latest.json" | jq -r .vm.size)
+          shm=$(df --output=avail -B1 /dev/shm | tail -n 1)
+          if (( shm > size + 2 * 1024 ** 3 )); then
+            cache=/dev/shm/omarchy-vm
+          else
+            cache=$RUNNER_TEMP/omarchy-vm
+          fi
+          mem=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 1024 - 2048 ))
+          (( mem <= 6144 )) || mem=6144
+          {
+            echo "OMARCHY_VM_CACHE=$cache"
+            echo "MEM=${mem}M"
+            echo "SMP=$(nproc)"
+          } >>"$GITHUB_ENV"
+          echo "Runner: $(nproc) CPUs, $(free -h | awk '/^Mem:/ {print $2}') memory; image $(( size / 1024 ** 2 )) MB in $cache; VM ${mem} MB" |
+            tee -a "$GITHUB_STEP_SUMMARY"
+          df -h /dev/shm "$RUNNER_TEMP"
+
+      # The script checks every file against its sha256.
+      - name: Fetch the VM image
+        run: |
+          "src/$REPO/test/omarchy-vm" fetch "$CHANNEL"
+          jq -r '"Image: Omarchy \(.omarchy_version) (\(.version)), kernel \(.kernel)"' \
+            "$OMARCHY_VM_CACHE/$CHANNEL/current/latest.json" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # QEMU runs in an Arch container on the runner's KVM: Arch's current
+      # QEMU, the same as omarchy-iso's install test and an Omarchy workstation.
+      - name: Run the tests in the VM
+        run: |
+          sudo chmod 0666 /dev/kvm
+          docker run --rm --device /dev/kvm -v "$PWD:/w" -v "$OMARCHY_VM_CACHE:$OMARCHY_VM_CACHE:ro" -w /w \
+            -e CHANNEL -e REPO -e OMARCHY_VM_CACHE -e VM_STATE_DIR=/tmp -e MEM -e SMP \
+            ghcr.io/archlinux/archlinux:latest bash -euo pipefail -c '
+              # pacman 7 fails every sync on a kernel without Landlock.
+              if ! grep -qw landlock /sys/kernel/security/lsm 2>/dev/null; then
+                printf "#!/bin/sh\nexec /usr/bin/pacman --disable-sandbox \"\$@\"\n" >/usr/local/bin/pacman
+                chmod 0755 /usr/local/bin/pacman
+              fi
+              # The Omarchy Arch mirror first; a mirror that drops a file must not fail the run.
+              sed -i "1i Server = https://mirror.omarchy.org/\$repo/os/\$arch" /etc/pacman.d/mirrorlist
+              for attempt in 1 2 3; do
+                if pacman -Syu --noconfirm --needed qemu-system-x86 qemu-hw-display-virtio-gpu \
+                    qemu-hw-display-virtio-vga qemu-img openssh jq >/dev/null; then
+                  break
+                elif (( attempt < 3 )); then
+                  echo "pacman failed, attempt $attempt of 3; trying again in 15 s"
+                  sleep 15
+                else
+                  echo "::error::the test container could not install QEMU"
+                  exit 1
+                fi
+              done
+              "src/$REPO/test/omarchy-vm" run --channel "$CHANNEL" --copy "src/$REPO" --out out \
+                -- bash -c "cd \"\$1\" && ./test/all" _ "$REPO"
+            '
+
+      # The container ran as root: its output belongs to root until here.
+      - name: Hand the results to the runner's user
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" out 2>/dev/null || true
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: omarchy-vm-${{ matrix.channel }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/
+          if-no-files-found: ignore
+          retention-days: 14
