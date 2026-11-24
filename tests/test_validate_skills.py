@@ -37,7 +37,7 @@ CGNAT = "100" + ".100.1.2"
 def repo(tmp_path: Path) -> Path:
     """A copy of the files the validator reads."""
     dst = tmp_path / "repo"
-    for rel in ("skills", ".claude-plugin", ".codex-plugin", ".github/workflows", "scripts"):
+    for rel in ("skills", ".agents", ".claude-plugin", ".codex-plugin", ".github/workflows", "scripts"):
         shutil.copytree(ROOT / rel, dst / rel, symlinks=True)
     for rel in ("README.md", "size-budget.json"):
         shutil.copy2(ROOT / rel, dst / rel)
@@ -326,7 +326,7 @@ def git(repo: Path, *args: str) -> str:
 
 def git_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "r"
-    repo.mkdir()
+    repo.mkdir(parents=True)
     git(repo, "init", "-q", "-b", "main")
     git(repo, "config", "user.email", "t@example.com")
     git(repo, "config", "user.name", "t")
@@ -390,3 +390,78 @@ def test_tree_scan_includes_untracked(tmp_path: Path):
 def test_this_repo_is_clean():
     proc = run_privacy(ROOT)
     assert proc.returncode == 0, proc.stdout
+
+
+def test_codex_marketplace_and_empty_version_validated(repo: Path):
+    p = repo / ".agents/plugins/marketplace.json"
+    data = json.loads(p.read_text())
+    data["plugins"][0]["source"]["path"] = "./missing"
+    p.write_text(json.dumps(data))
+    assert any("source.path" in e for e in errors(repo))
+    p.write_text((ROOT / ".agents/plugins/marketplace.json").read_text())
+    for rel in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json"):
+        m = json.loads((repo / rel).read_text())
+        m["version"] = ""
+        (repo / rel).write_text(json.dumps(m))
+    cm = json.loads((repo / ".claude-plugin/marketplace.json").read_text())
+    cm["plugins"][0]["version"] = ""
+    (repo / ".claude-plugin/marketplace.json").write_text(json.dumps(cm))
+    assert any("non-empty" in e for e in errors(repo))
+
+
+def test_bare_home_paths_and_extended_secret_names_caught():
+    assert cp.scan_text("HOME=/ho" + "me/alice\ncd /Us" + "ers/bob", "f.md", cp.rules(None))
+    for name in ("id_rsa", "id_ecdsa.pub", "cert.p12", "bundle.pfx", ".netrc", ".npmrc"):
+        assert cp.forbidden_file(name) is not None
+
+
+def test_history_catches_binary_empty_nonascii_merge_plusplus_and_author(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    # 1. Binary secret + empty .env + non-ASCII .pem + added line starting with "++ "
+    (repo / "binary.key").write_bytes(b"\x00\x01\x02binary")
+    (repo / ".env").write_bytes(b"")
+    (repo / "cl\u00e9.pem").write_text("cert\n")
+    (repo / "notes.md").write_text("++ " + HOME_PATH + "\n")
+    git(repo, "add", "-f", "binary.key", ".env", "cl\u00e9.pem", "notes.md")
+    git(repo, "commit", "-qm", "add leaks")
+    git(repo, "rm", "-q", "binary.key", ".env", "cl\u00e9.pem")
+    (repo / "notes.md").write_text("clean\n")
+    git(repo, "commit", "-qam", "clean up")
+    proc = run_privacy(repo, "--all")
+    assert proc.returncode == 1
+    assert "binary.key: secret file (*.key)" in proc.stdout
+    assert ".env: secret file (.env)" in proc.stdout
+    assert "cl\u00e9.pem: secret file (*.pem)" in proc.stdout
+    assert "notes.md: linux home path" in proc.stdout
+
+    # 2. Merge-introduced leak removed later
+    repo2 = git_repo(tmp_path / "m")
+    git(repo2, "checkout", "-qb", "side")
+    (repo2 / "side.txt").write_text("ok\n")
+    git(repo2, "add", ".")
+    git(repo2, "commit", "-qm", "side")
+    git(repo2, "checkout", "-q", "main")
+    (repo2 / "main.txt").write_text("ok\n")
+    git(repo2, "add", ".")
+    git(repo2, "commit", "-qm", "main")
+    git(repo2, "merge", "--no-ff", "--no-commit", "side")
+    (repo2 / "evil.txt").write_text(f"merge {TAILNET}\n")
+    git(repo2, "add", "evil.txt")
+    git(repo2, "commit", "-qm", "merge side")
+    git(repo2, "rm", "-q", "evil.txt")
+    git(repo2, "commit", "-qm", "drop evil")
+    proc2 = run_privacy(repo2, "--all")
+    assert proc2.returncode == 1
+    assert "tailnet hostname" in proc2.stdout
+
+    # 3. Symlink target leak in tree + trailing-newline PRIVATE_DENY_REGEX + --require-deny
+    repo3 = git_repo(tmp_path / "s")
+    (repo3 / "badlink").symlink_to(HOME_PATH)
+    proc3 = run_privacy(repo3)
+    assert proc3.returncode == 1
+    assert "badlink (symlink):1: linux home path" in proc3.stdout
+    (repo3 / "badlink").unlink()
+    (repo3 / "doc.md").write_text("codename moonbase\n")
+    assert run_privacy(repo3, "--require-deny").returncode == 1
+    assert run_privacy(repo3, "--require-deny", deny="alpha|moonbase\n").returncode == 1
+    assert run_privacy(repo3, "--require-deny", deny="\n").returncode == 1

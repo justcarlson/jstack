@@ -237,11 +237,52 @@ def check_links(skill: Path, deps: tuple[str, ...] = ()) -> list[str]:
 def manifest_versions(root: Path) -> dict[str, str]:
     out = {}
     for rel in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json"):
-        out[rel] = json.loads((root / rel).read_text())["version"]
+        out[rel] = str(json.loads((root / rel).read_text()).get("version", "")).strip()
     market = json.loads((root / ".claude-plugin/marketplace.json").read_text())
-    for i, plugin in enumerate(market["plugins"]):
-        out[f".claude-plugin/marketplace.json plugins[{i}]"] = plugin.get("version", "")
+    for i, plugin in enumerate(market.get("plugins", [])):
+        out[f".claude-plugin/marketplace.json plugins[{i}]"] = str(plugin.get("version", "")).strip()
     return out
+
+
+def check_manifests(root: Path) -> list[str]:
+    errors: list[str] = []
+    try:
+        claude_plugin = json.loads((root / ".claude-plugin/plugin.json").read_text())
+        codex_plugin = json.loads((root / ".codex-plugin/plugin.json").read_text())
+        claude_market = json.loads((root / ".claude-plugin/marketplace.json").read_text())
+        codex_market = json.loads((root / ".agents/plugins/marketplace.json").read_text())
+    except (OSError, ValueError) as exc:
+        return [f"plugin manifest invalid: {exc}"]
+
+    if not claude_market.get("plugins"):
+        errors.append(".claude-plugin/marketplace.json: plugins must be non-empty")
+    if not codex_market.get("plugins"):
+        errors.append(".agents/plugins/marketplace.json: plugins must be non-empty")
+    for i, plugin in enumerate(codex_market.get("plugins", [])):
+        if plugin.get("name") != codex_plugin.get("name"):
+            errors.append(f".agents/plugins/marketplace.json plugins[{i}]: name must match .codex-plugin/plugin.json")
+        src_path = (plugin.get("source") or {}).get("path", "")
+        if not src_path or not (root / src_path / ".codex-plugin/plugin.json").is_file():
+            errors.append(
+                f".agents/plugins/marketplace.json plugins[{i}]: source.path {src_path!r} must contain .codex-plugin/plugin.json"
+            )
+    for rel, data in ((".claude-plugin/plugin.json", claude_plugin), (".codex-plugin/plugin.json", codex_plugin)):
+        skills_ref = data.get("skills")
+        if skills_ref and not (root / skills_ref).is_dir():
+            errors.append(f"{rel}: skills path {skills_ref!r} does not exist")
+    icon = root / ".claude-plugin/icon.png"
+    if not icon.is_file():
+        errors.append(".claude-plugin/icon.png is missing")
+    logo = (codex_plugin.get("interface") or {}).get("logo")
+    if logo and not (root / logo).is_file():
+        errors.append(f".codex-plugin/plugin.json: interface.logo {logo!r} does not exist")
+
+    versions = manifest_versions(root)
+    if any(not v for v in versions.values()):
+        errors.append("manifest versions must be non-empty: " + ", ".join(f"{k}={v!r}" for k, v in versions.items()))
+    elif len(set(versions.values())) != 1:
+        errors.append("manifest versions differ: " + ", ".join(f"{k}={v}" for k, v in versions.items()))
+    return errors
 
 
 def validate(root: Path) -> list[str]:
@@ -271,9 +312,7 @@ def validate(root: Path) -> list[str]:
         errors.extend(check_links(d, deps.get(d.name, ())))
         if f"`{d.name}`" not in readme:
             errors.append(f"README.md: skill `{d.name}` is not listed")
-    versions = manifest_versions(root)
-    if len(set(versions.values())) != 1:
-        errors.append("manifest versions differ: " + ", ".join(f"{k}={v}" for k, v in versions.items()))
+    errors.extend(check_manifests(root))
     template = root / "skills/pr/templates/pr-body.yml"
     workflow = root / ".github/workflows/pr-body.yml"
     if not workflow.is_file() or workflow.read_bytes() != template.read_bytes():

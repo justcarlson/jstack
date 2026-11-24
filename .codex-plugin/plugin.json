@@ -19,6 +19,7 @@
     "capabilities": ["Interactive", "Read", "Write"],
     "defaultPrompt": ["Full send this change.", "Council this plan."],
     "websiteURL": "https://github.com/justcarlson/jstack",
+    "logo": "./.claude-plugin/icon.png",
     "brandColor": "#4A5D4E"
   }
 }

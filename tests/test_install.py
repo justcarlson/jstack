@@ -49,6 +49,9 @@ def test_resolve_is_transitive():
     assert install.resolve(["full-stop"]) == sorted(
         {"full-stop", "full-send", "sol-loop", "file-pr", "babysit-pr", "leaving-pr-comments", "pr"}
     )
+    assert install.resolve(["file-pr"]) == ["babysit-pr", "file-pr", "leaving-pr-comments"]
+    assert install.resolve(["babysit-pr"]) == ["babysit-pr", "leaving-pr-comments"]
+    assert install.resolve(["modernize"]) == ["leaving-pr-comments", "modernize"]
     assert install.resolve(["hindsight-setup"]) == ["hindsight", "hindsight-setup"]
     assert install.resolve(["full-stop"], with_deps=False) == ["full-stop"]
     epic = install.resolve(["epic"])
@@ -277,3 +280,54 @@ def test_help_lists_flags():
     proc = subprocess.run([sys.executable, str(SCRIPT), "--help"], capture_output=True, text=True, check=False)
     assert proc.returncode == 0
     assert "--uninstall" in proc.stdout
+
+
+def test_only_empty_errors_instead_of_uninstalling_all(home: Path):
+    run(home, "--client", "claude", "--only", "pr")
+    with pytest.raises(SystemExit):
+        run(home, "--client", "claude", "--uninstall", "--only", "")
+    with pytest.raises(SystemExit):
+        run(home, "--client", "claude", "--only", ",")
+    assert (home / ".claude" / "skills" / "pr").is_symlink()
+
+
+def test_owns_link_guards_root_symlink_copied_rename_relative_source_and_symlink_marker(home: Path, tmp_path: Path):
+    target = home / ".claude" / "skills"
+    target.mkdir(parents=True)
+    # Symlink to skills/ root itself must not be owned.
+    root_link = target / "my-jstack-root"
+    root_link.symlink_to(SKILLS.resolve())
+    assert not install.owns_link(root_link)
+    # Copied installed folder renamed by user must not be owned.
+    run(home, "--client", "claude", "--mode", "copy", "--only", "council")
+    renamed = target / "my-council"
+    (target / "council").rename(renamed)
+    assert not install.owns_link(renamed)
+    # Relative source marker must not be owned.
+    rel_dir = target / "rel-skill"
+    rel_dir.mkdir()
+    (rel_dir / install.MARKER).write_text(json.dumps({"source": ".", "skill": "rel-skill"}))
+    assert not install.owns_link(rel_dir)
+    # Symlinked marker must not be owned.
+    sym_dir = target / "sym-skill"
+    sym_dir.mkdir()
+    real_marker = tmp_path / "real.json"
+    real_marker.write_text(json.dumps({"source": str(ROOT.resolve()), "skill": "sym-skill"}))
+    (sym_dir / install.MARKER).symlink_to(real_marker)
+    assert not install.owns_link(sym_dir)
+    # Uninstall leaves all four untouched.
+    assert run(home, "--client", "claude", "--uninstall") == 0
+    assert entries(target) == sorted(["my-jstack-root", "my-council", "rel-skill", "sym-skill"])
+
+
+def test_copy_mode_tracks_digest_and_skips_pycache(home: Path):
+    assert run(home, "--client", "claude", "--mode", "copy", "--only", "pr") == 0
+    marker = home / ".claude" / "skills" / "pr" / install.MARKER
+    data = json.loads(marker.read_text())
+    assert len(data["digest"]) == 64
+    assert not list((home / ".claude" / "skills" / "pr").rglob("__pycache__"))
+    data["digest"] = "0" * 64
+    marker.write_text(json.dumps(data))
+    assert run(home, "--client", "claude", "--mode", "copy", "--only", "pr", "--check") == 1
+    assert run(home, "--client", "claude", "--mode", "copy", "--only", "pr") == 0
+    assert run(home, "--client", "claude", "--mode", "copy", "--only", "pr", "--check") == 0

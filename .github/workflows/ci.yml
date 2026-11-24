@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   validate-skills:
@@ -31,6 +31,7 @@ jobs:
           NO_COLOR: '1'
           DISABLE_TELEMETRY: '1'
           DO_NOT_TRACK: '1'
+          NPM_CONFIG_IGNORE_SCRIPTS: '1'
         run: |
           set -euo pipefail
           npx --yes skills@1.5.22 add "$PWD" --list > "$RUNNER_TEMP/skills-list.txt" 2>&1
@@ -40,7 +41,7 @@ jobs:
           listed = set(re.findall(r"(?m)^\S*\s{2,}([a-z0-9][a-z0-9-]*)\s*$", pathlib.Path(sys.argv[1]).read_text()))
           want = {p.name for p in pathlib.Path("skills").iterdir() if (p / "SKILL.md").is_file()}
           missing = sorted(want - listed)
-          if missing or len(want) != 17:
+          if not want or missing:
               print(f"::error::skills CLI listed {len(want & listed)}/{len(want)}; missing: {', '.join(missing) or 'none'}")
               sys.exit(1)
           print(f"skills CLI lists all {len(want)} skills")
@@ -70,7 +71,13 @@ jobs:
       - name: Private markers (tree and all history)
         env:
           PRIVATE_DENY_REGEX: ${{ secrets.PRIVATE_DENY_REGEX }}
-        run: python3 scripts/check_privacy.py --all
+          IS_INTERNAL: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          if [ "$IS_INTERNAL" = "true" ]; then
+            python3 scripts/check_privacy.py --all --require-deny
+          else
+            python3 scripts/check_privacy.py --all
+          fi
 
   lint-and-test:
     runs-on: ubuntu-24.04
@@ -122,7 +129,7 @@ jobs:
           bad = {name: job["result"] for name, job in needs.items() if job["result"] != "success"}
           for name, result in bad.items():
               print(f"::error::{name} finished with {result}")
-          if len(needs) != 3:
-              print(f"::error::expected 3 needed jobs, got {len(needs)}")
-          sys.exit(1 if bad or len(needs) != 3 else 0)
+          if not needs:
+              print("::error::expected at least one needed job")
+          sys.exit(1 if bad or not needs else 0)
           PY

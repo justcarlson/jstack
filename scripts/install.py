@@ -9,6 +9,7 @@ entries this checkout owns.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -22,11 +23,15 @@ MARKER = ".jstack-install.json"
 CLIENTS = ("claude", "codex", "antigravity", "opencode")
 # Never touch these names, even if a stray marker or link claims them.
 PROTECTED = frozenset({"synced"})
+COPY_IGNORE = ("__pycache__", "*.py[cod]", ".DS_Store")
 
 # Sibling skills each skill calls. Resolved transitively.
 DEPS: dict[str, tuple[str, ...]] = {
     "full-send": ("sol-loop", "file-pr", "babysit-pr", "leaving-pr-comments", "pr"),
     "full-stop": ("full-send",),
+    "file-pr": ("babysit-pr", "leaving-pr-comments"),
+    "babysit-pr": ("leaving-pr-comments",),
+    "modernize": ("leaving-pr-comments",),
     "takeover": ("modernize", "file-pr", "babysit-pr", "leaving-pr-comments"),
     "bug": ("council", "leaving-pr-comments"),
     "epic": (
@@ -118,19 +123,27 @@ def targets(home: Path, client: str, env: dict[str, str]) -> list[Target]:
     return [Target(c, d) for c in chosen for d in client_dirs(home, c, env)]
 
 
-def _within(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
+def tree_digest(src: Path) -> str:
+    """Deterministic SHA-256 of a skill folder, ignoring bytecode and Finder noise."""
+    h = hashlib.sha256()
+    for path in sorted(src.rglob("*")):
+        rel = path.relative_to(src)
+        if any(part == "__pycache__" or part == ".DS_Store" for part in rel.parts):
+            continue
+        if path.suffix in (".pyc", ".pyo", ".pyd"):
+            continue
+        if path.is_file():
+            h.update(rel.as_posix().encode("utf-8") + b"\0")
+            h.update(path.read_bytes() + b"\0")
+    return h.hexdigest()
 
 
 def owns_link(entry: Path) -> bool:
     """True only for entries this checkout installed.
 
-    A symlink must resolve into this repo's skills/ tree. A real folder must
-    hold a marker naming this repo. Anything else belongs to the user.
+    A symlink must point directly at a child of this repo's skills/ tree. A real
+    folder must hold a non-symlink marker naming this repo's absolute path and
+    matching entry.name. Anything else belongs to the user.
     """
     if entry.name in PROTECTED:
         return False
@@ -139,12 +152,17 @@ def owns_link(entry: Path) -> bool:
             dest = entry.resolve(strict=False)
         except (OSError, RuntimeError):
             return False
-        return _within(dest, SKILLS_DIR.resolve())
+        return dest.parent == SKILLS_DIR.resolve()
     marker = entry / MARKER
-    if entry.is_dir() and marker.is_file():
+    if entry.is_dir() and not marker.is_symlink() and marker.is_file():
         try:
             data = json.loads(marker.read_text())
-            source = Path(data["source"]).resolve()
+            raw_source = data["source"]
+            if not isinstance(raw_source, str) or not Path(raw_source).is_absolute():
+                return False
+            if data.get("skill") != entry.name:
+                return False
+            source = Path(raw_source).resolve()
         except (OSError, ValueError, KeyError, TypeError):
             return False
         return source == REPO.resolve()
@@ -164,7 +182,7 @@ def status(entry: Path, name: str, mode: str) -> str:
             return "stale"
         return "ok" if mode == "symlink" else "mode"
     data = json.loads((entry / MARKER).read_text())
-    if data.get("version") != version():
+    if data.get("version") != version() or data.get("digest") != tree_digest(src) or data.get("skill") != name:
         return "stale"
     return "ok" if mode == "copy" else "mode"
 
@@ -185,8 +203,13 @@ def place(entry: Path, name: str, mode: str) -> None:
     if mode == "symlink":
         entry.symlink_to(src.resolve(), target_is_directory=True)
         return
-    shutil.copytree(src, entry, symlinks=False)
-    marker = {"source": str(REPO.resolve()), "skill": name, "version": version()}
+    shutil.copytree(src, entry, symlinks=False, ignore=shutil.ignore_patterns(*COPY_IGNORE))
+    marker = {
+        "source": str(REPO.resolve()),
+        "skill": name,
+        "version": version(),
+        "digest": tree_digest(src),
+    }
     (entry / MARKER).write_text(json.dumps(marker, indent=2) + "\n")
 
 
@@ -213,8 +236,10 @@ def run(argv: list[str] | None = None, environ: dict[str, str] | None = None) ->
     else:
         home = Path(env.get("HOME") or Path.home())
 
-    if args.only:
+    if args.only is not None:
         picked = [s.strip() for s in args.only.split(",") if s.strip()]
+        if not picked:
+            parser.error("--only requires at least one skill")
         # Uninstall removes only the named skills: other skills may still need their siblings.
         names = resolve(picked, with_deps=not (args.no_deps or args.uninstall))
         added = sorted(set(names) - set(picked))
@@ -230,7 +255,7 @@ def run(argv: list[str] | None = None, environ: dict[str, str] | None = None) ->
             if not target.path.is_dir():
                 continue
             for entry in sorted(target.path.iterdir()):
-                if args.only and entry.name not in names:
+                if args.only is not None and entry.name not in names:
                     continue
                 if owns_link(entry):
                     remove(entry)
