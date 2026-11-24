@@ -1,0 +1,504 @@
+#!/usr/bin/env python3
+"""Inventory local agent-harness logs for the hindsight skill.
+
+Read-only. Reads file names and modification times, and counts rows in
+OpenCode's SQLite database. It never opens transcript files, so prompt text,
+message contents and secrets cannot reach its output.
+
+Exit codes: 0 ok, 1 --check found a problem, 2 usage or config error.
+"""
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import glob
+import json
+import os
+import shutil
+import sqlite3
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+CONFIG_VERSION = 1
+PRIVACY_MODES = ("paraphrase", "local-quotes")
+HARNESSES = ("claude_code", "codex", "antigravity", "opencode", "pi")
+LABELS = {
+    "claude_code": "Claude Code",
+    "codex": "Codex CLI",
+    "antigravity": "Antigravity",
+    "opencode": "OpenCode",
+    "pi": "Pi",
+}
+# Each entry: (kind, glob relative to the home directory).
+PATTERNS = {
+    "claude_code": [
+        ("parent", ".claude/projects/*/*.jsonl"),
+        ("subagent", ".claude/projects/*/*/subagents/*.jsonl"),
+    ],
+    "codex": [
+        ("session", ".codex/sessions/**/rollout-*.jsonl*"),
+        ("session", ".codex/archived_sessions/**/rollout-*.jsonl*"),
+    ],
+    "antigravity": [
+        ("session", ".gemini/**/transcript.jsonl"),
+        (
+            "session",
+            ".t3/userdata/providers/antigravity/*/antigravity-acp/brain/*/"
+            ".system_generated/logs/transcript.jsonl",
+        ),
+    ],
+    "pi": [("session", ".pi/agent/sessions/*/*.jsonl")],
+}
+OPENCODE_DB = ".local/share/opencode/opencode.db"
+OPENCODE_TABLES = ("session_v2", "session")
+
+
+def iso(ts: float | None) -> str | None:
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def expand(home: Path, pattern: str) -> str:
+    if pattern.startswith("~/"):
+        return os.path.join(str(home), pattern[2:])
+    if os.path.isabs(pattern):
+        return pattern
+    return os.path.join(str(home), pattern)
+
+
+def tilde(home: Path, text: str) -> str:
+    h = str(home)
+    return "~" + text[len(h):] if text.startswith(h) else text
+
+
+def excluded(path: str, excludes: list[str]) -> bool:
+    return any(fnmatch.fnmatch(path, pat) for pat in excludes)
+
+
+def find_files(home: Path, pattern: str, excludes: list[str]) -> list[str]:
+    found = set()
+    for p in glob.glob(expand(home, pattern), recursive=True):
+        if os.path.isfile(p) and not excluded(p, excludes):
+            found.add(os.path.realpath(p))
+    return sorted(found)
+
+
+def span(paths: list[str]) -> tuple[float | None, float | None]:
+    times = []
+    for p in paths:
+        try:
+            times.append(os.stat(p).st_mtime)
+        except OSError:
+            continue
+    return (min(times), max(times)) if times else (None, None)
+
+
+def scan_files(home: Path, name: str, excludes: list[str]) -> dict:
+    kinds: dict[str, list[str]] = {}
+    for kind, pattern in PATTERNS[name]:
+        kinds.setdefault(kind, []).extend(find_files(home, pattern, excludes))
+    allfiles = sorted({p for v in kinds.values() for p in v})
+    lo, hi = span(allfiles)
+    info: dict = {
+        "found": bool(allfiles),
+        "session_files": len(allfiles),
+        "earliest_utc": iso(lo),
+        "latest_utc": iso(hi),
+        "_mtimes": (lo, hi),
+    }
+    if name == "claude_code":
+        info["parent_sessions"] = len(kinds.get("parent", []))
+        info["subagent_files"] = len(kinds.get("subagent", []))
+    return info
+
+
+def to_seconds(value: float) -> float:
+    return value / 1000.0 if value > 1e11 else float(value)
+
+
+def scan_opencode(home: Path) -> dict:
+    db = os.path.join(str(home), OPENCODE_DB)
+    info: dict = {
+        "found": False,
+        "session_files": 0,
+        "earliest_utc": None,
+        "latest_utc": None,
+        "_mtimes": (None, None),
+    }
+    if not os.path.isfile(db):
+        return info
+    info["found"] = True
+    info["readable"] = False
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0)
+    except sqlite3.Error as exc:
+        info["error"] = type(exc).__name__
+        return info
+    try:
+        tables = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+        for table in OPENCODE_TABLES:
+            if table not in tables:
+                continue
+            cols = {r[1] for r in con.execute(f"pragma table_info({table})")}
+            if "time_created" in cols:
+                n, lo, hi = con.execute(
+                    f"select count(*), min(time_created), max(time_created) from {table}"
+                ).fetchone()
+            else:
+                n, lo, hi = con.execute(f"select count(*), null, null from {table}").fetchone()
+            lo_s = to_seconds(lo) if lo is not None else None
+            hi_s = to_seconds(hi) if hi is not None else None
+            info.update(
+                readable=True,
+                table=table,
+                sessions=n,
+                session_files=n,
+                earliest_utc=iso(lo_s),
+                latest_utc=iso(hi_s),
+                _mtimes=(lo_s, hi_s),
+            )
+            info["found"] = n > 0
+            return info
+        info["error"] = "no_session_table"
+    except sqlite3.Error as exc:
+        info["error"] = type(exc).__name__
+    finally:
+        con.close()
+    return info
+
+
+def check_gh(repo: str | None) -> dict:
+    exe = shutil.which("gh")
+    if not exe:
+        return {"installed": False, "authenticated": False, "status": "not_installed"}
+    out: dict = {"installed": True, "authenticated": False}
+    try:
+        r = subprocess.run(
+            [exe, "auth", "status"], capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL
+        )
+        out["authenticated"] = r.returncode == 0
+        out["status"] = "authenticated" if r.returncode == 0 else "unauthenticated"
+    except subprocess.TimeoutExpired:
+        out["status"] = "timeout"
+    except OSError as exc:
+        out["status"] = "error:" + type(exc).__name__
+    if repo:
+        out["repo"] = {"path_is_git_repo": False}
+        try:
+            g = subprocess.run(
+                ["git", "-C", repo, "rev-parse", "--is-inside-work-tree"],
+                capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL,
+            )
+            out["repo"]["path_is_git_repo"] = g.returncode == 0 and g.stdout.strip() == "true"
+            if out["repo"]["path_is_git_repo"] and out["authenticated"]:
+                v = subprocess.run(
+                    [exe, "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+                    capture_output=True, text=True, timeout=5, cwd=repo, stdin=subprocess.DEVNULL,
+                )
+                out["repo"]["gh_resolves_repo"] = v.returncode == 0
+        except (subprocess.TimeoutExpired, OSError):
+            out["repo"]["error"] = "timeout_or_os_error"
+    return out
+
+
+def load_config(path: Path) -> tuple[dict | None, str | None]:
+    """Return (config, error). A missing file gives (None, None)."""
+    if not path.exists():
+        return None, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, f"config unreadable: {type(exc).__name__}"
+    except json.JSONDecodeError as exc:
+        return None, f"config is not valid JSON (line {exc.lineno}, column {exc.colno})"
+    if not isinstance(data, dict):
+        return None, "config top level must be a JSON object"
+    return data, None
+
+
+def config_lists(cfg: dict) -> tuple[dict, list[str], list[str]]:
+    """Return (custom_globs, exclude_globs, problems) with types checked."""
+    problems: list[str] = []
+    custom = cfg.get("custom_globs", {})
+    if not isinstance(custom, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in custom.items()):
+        problems.append("custom_globs must map names to glob strings")
+        custom = {}
+    excl = cfg.get("exclude_globs", [])
+    if not isinstance(excl, list) or not all(isinstance(x, str) for x in excl):
+        problems.append("exclude_globs must be a list of glob strings")
+        excl = []
+    return custom, excl, problems
+
+
+def harness_enabled(cfg: dict | None, name: str) -> bool:
+    if not cfg:
+        return True
+    entry = cfg.get("harnesses", {})
+    if isinstance(entry, dict) and isinstance(entry.get(name), dict):
+        return entry[name].get("enabled", True) is not False
+    return True
+
+
+def discover(args: argparse.Namespace, home: Path, cfg: dict | None, cfg_path: Path, cfg_error: str | None) -> dict:
+    cfg_view = cfg or {}
+    custom, excludes, _ = config_lists(cfg_view)
+    excludes = list(excludes) + list(args.exclude or [])
+    harnesses: dict = {}
+    disabled: list[str] = []
+    for name in HARNESSES:
+        if not harness_enabled(cfg, name):
+            disabled.append(name)
+            continue
+        harnesses[name] = scan_opencode(home) if name == "opencode" else scan_files(home, name, excludes)
+
+    custom_all = dict(custom)
+    for item in args.extra_glob or []:
+        key, _, pat = item.partition("=")
+        if key and pat:
+            custom_all[key] = pat
+    custom_out: dict = {}
+    for key, pat in sorted(custom_all.items()):
+        files = find_files(home, pat, excludes)
+        lo, hi = span(files)
+        custom_out[key] = {
+            "glob": tilde(home, expand(home, pat)),
+            "session_files": len(files),
+            "earliest_utc": iso(lo),
+            "latest_utc": iso(hi),
+            "_mtimes": (lo, hi),
+        }
+
+    gh = {"skipped": True} if args.no_gh else check_gh(args.repo)
+
+    overlays: dict = {}
+    for key in ("analytics_mcp", "t3_mcp"):
+        if cfg_view.get(key):
+            overlays[key] = {"name": cfg_view[key] if isinstance(cfg_view[key], str) else True, "status": "declared"}
+    if cfg_view.get("queries_ref"):
+        ref = cfg_view["queries_ref"]
+        exists = isinstance(ref, str) and os.path.isfile(expand(home, ref))
+        overlays["queries_ref"] = {"path": ref if isinstance(ref, str) else None, "exists": exists}
+
+    found = [n for n, v in harnesses.items() if v["found"] and v.get("readable", True)]
+    missing = [n for n in harnesses if n not in found]
+    stamps = [t for v in list(harnesses.values()) + list(custom_out.values()) for t in v["_mtimes"] if t is not None]
+    total = sum(v["session_files"] for v in harnesses.values()) + sum(v["session_files"] for v in custom_out.values())
+    for v in list(harnesses.values()) + list(custom_out.values()):
+        v.pop("_mtimes", None)
+
+    result = {
+        "coverage": {
+            "discovered_harnesses": found,
+            "missing_harnesses": missing,
+            "disabled_harnesses": disabled,
+            "total_session_files": total,
+            "earliest_utc": iso(min(stamps)) if stamps else None,
+            "latest_utc": iso(max(stamps)) if stamps else None,
+            "config_exists": cfg_path.exists(),
+        },
+        "harnesses": harnesses,
+        "custom_globs": custom_out,
+        "gh": gh,
+        "t3_code": {"userdata_detected": (home / ".t3" / "userdata").is_dir()},
+        "configured_overlays": overlays,
+        "config_path": tilde(home, str(cfg_path)),
+        "note": "Missing or uncovered sources are gaps, not zero incidents.",
+    }
+    if cfg_error:
+        result["config_error"] = cfg_error
+    if cfg_view.get("privacy"):
+        result["privacy"] = cfg_view["privacy"]
+    return result
+
+
+def run_check(result: dict, cfg: dict | None, cfg_error: str | None, home: Path) -> dict:
+    errors: list[str] = []
+    warnings: list[str] = []
+    if cfg_error:
+        errors.append(cfg_error)
+    if cfg is not None:
+        custom, _, problems = config_lists(cfg)
+        errors.extend(problems)
+        harness_cfg = cfg.get("harnesses", {})
+        if not isinstance(harness_cfg, dict):
+            errors.append("harnesses must be an object")
+            harness_cfg = {}
+        for name, entry in harness_cfg.items():
+            if name not in HARNESSES:
+                errors.append(f"unknown harness in config: {name}")
+            elif isinstance(entry, dict) and entry.get("enabled", True) is not False:
+                v = result["harnesses"].get(name, {})
+                if not v.get("found") or v.get("readable") is False:
+                    errors.append(f"enabled harness has no readable sessions: {name}")
+        for key in custom:
+            if result["custom_globs"].get(key, {}).get("session_files", 0) == 0:
+                errors.append(f"custom glob matches no files: {key}")
+        if cfg.get("privacy") not in (None, *PRIVACY_MODES):
+            errors.append(f"privacy must be one of: {', '.join(PRIVACY_MODES)}")
+        for key in ("analytics_mcp", "t3_mcp"):
+            if key in cfg and not (isinstance(cfg[key], (str, bool)) and cfg[key] != ""):
+                errors.append(f"{key} must be a non-empty string or true")
+        if cfg.get("queries_ref"):
+            if not result["configured_overlays"].get("queries_ref", {}).get("exists"):
+                errors.append("queries_ref file does not exist")
+        for key in ("analytics_mcp", "t3_mcp"):
+            if cfg.get(key):
+                warnings.append(f"{key} is declared but this script cannot test MCP tools; verify in the session")
+    active = [n for n, v in result["harnesses"].items() if v["found"] and v.get("readable", True)]
+    active += [k for k, v in result["custom_globs"].items() if v["session_files"] > 0]
+    if not active:
+        errors.append("no readable log source found")
+    return {"ok": not errors, "active_sources": active, "errors": errors, "warnings": warnings}
+
+
+def write_config(args: argparse.Namespace, cfg_path: Path, cfg: dict | None, result: dict) -> dict:
+    out = dict(cfg) if cfg else {}
+    out["version"] = CONFIG_VERSION
+    hs = out.get("harnesses") if isinstance(out.get("harnesses"), dict) else {}
+    for name in HARNESSES:
+        existing = hs.get(name) if isinstance(hs.get(name), dict) else None
+        if existing is not None:
+            continue  # keep the user's choice and any unknown keys
+        if result["harnesses"].get(name, {}).get("found") and result["harnesses"][name].get("readable", True):
+            hs[name] = {"enabled": True}
+    out["harnesses"] = hs
+    custom = out.get("custom_globs") if isinstance(out.get("custom_globs"), dict) else {}
+    for item in args.extra_glob or []:
+        key, _, pat = item.partition("=")
+        if not key or not pat:
+            raise ValueError(f"--extra-glob needs NAME=GLOB, got: {item!r}")
+        custom[key] = pat
+    if custom:
+        out["custom_globs"] = custom
+    excl = out.get("exclude_globs") if isinstance(out.get("exclude_globs"), list) else []
+    for pat in args.exclude or []:
+        if pat not in excl:
+            excl.append(pat)
+    if excl:
+        out["exclude_globs"] = excl
+    if args.analytics_mcp:
+        out["analytics_mcp"] = args.analytics_mcp
+    if args.analytics_queries:
+        out["queries_ref"] = args.analytics_queries
+    if args.privacy:
+        out["privacy"] = args.privacy
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".sources-", suffix=".tmp", dir=str(cfg_path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(out, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, cfg_path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    return out
+
+
+def human(result: dict, check: dict | None, wrote: str | None) -> str:
+    cov = result["coverage"]
+    lines = ["Hindsight coverage"]
+    lines.append(f"  config: {result['config_path']} ({'found' if cov['config_exists'] else 'absent'})")
+    for name, v in result["harnesses"].items():
+        if v["found"]:
+            extra = ""
+            if name == "claude_code":
+                extra = f" ({v['parent_sessions']} parent, {v['subagent_files']} subagent)"
+            lines.append(
+                f"  [x] {LABELS[name]}: {v['session_files']} sessions{extra}, "
+                f"{v['earliest_utc']} to {v['latest_utc']}"
+            )
+        else:
+            lines.append(f"  [ ] {LABELS[name]}: not found")
+    for name in cov["disabled_harnesses"]:
+        lines.append(f"  [-] {LABELS[name]}: disabled in config")
+    for key, v in result["custom_globs"].items():
+        lines.append(f"  [{'x' if v['session_files'] else ' '}] custom {key}: {v['session_files']} files")
+    gh = result["gh"]
+    lines.append("  gh: skipped" if gh.get("skipped") else f"  gh: {gh.get('status')}")
+    lines.append(f"  T3 Code userdata: {'detected' if result['t3_code']['userdata_detected'] else 'not detected'}")
+    for key, v in result["configured_overlays"].items():
+        lines.append(f"  overlay {key}: {json.dumps(v, sort_keys=True)}")
+    lines.append(
+        f"  total: {cov['total_session_files']} files, {cov['earliest_utc']} to {cov['latest_utc']}"
+    )
+    if cov["missing_harnesses"]:
+        lines.append("  gaps (not zero incidents): " + ", ".join(cov["missing_harnesses"]))
+    if "config_error" in result:
+        lines.append("  config error: " + result["config_error"])
+    if wrote:
+        lines.append(f"  wrote config: {wrote}")
+    if check:
+        lines.append("  check: " + ("ok" if check["ok"] else "FAILED"))
+        lines.extend("    error: " + e for e in check["errors"])
+        lines.extend("    warn: " + w for w in check["warnings"])
+    return "\n".join(lines)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="hindsight-discover",
+        description="Read-only inventory of local agent logs. Prints metadata only.",
+    )
+    p.add_argument("--home", help="home directory to scan (default: ~)")
+    p.add_argument("--config", help="sources.json path (default: $HINDSIGHT_CONFIG or ~/.config/hindsight/sources.json)")
+    p.add_argument("--check", action="store_true", help="validate configured sources; exit 1 on a problem")
+    p.add_argument("--write-config", action="store_true", help="write or update the config from discovery")
+    p.add_argument("--extra-glob", action="append", metavar="NAME=GLOB", help="add a custom log glob (with --write-config)")
+    p.add_argument("--exclude", action="append", metavar="GLOB", help="exclude paths matching GLOB")
+    p.add_argument("--analytics-mcp", metavar="NAME", help="record an analytics MCP server name (with --write-config)")
+    p.add_argument("--analytics-queries", metavar="PATH", help="record a saved-queries file (with --write-config)")
+    p.add_argument("--privacy", choices=PRIVACY_MODES, help="record the privacy mode (with --write-config)")
+    p.add_argument("--repo", metavar="DIR", help="git repo to test with gh")
+    p.add_argument("--no-gh", action="store_true", help="skip the gh check")
+    p.add_argument("--human", action="store_true", help="print a short readable summary")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    home = Path(args.home).expanduser() if args.home else Path.home()
+    if args.config:
+        cfg_path = Path(args.config).expanduser()
+    elif os.environ.get("HINDSIGHT_CONFIG"):
+        cfg_path = Path(os.environ["HINDSIGHT_CONFIG"]).expanduser()
+    else:
+        cfg_path = home / ".config" / "hindsight" / "sources.json"
+
+    cfg, cfg_error = load_config(cfg_path)
+    if args.write_config and cfg_error:
+        print(f"refusing to overwrite {tilde(home, str(cfg_path))}: {cfg_error}", file=sys.stderr)
+        return 2
+
+    result = discover(args, home, cfg, cfg_path, cfg_error)
+    wrote = None
+    if args.write_config:
+        try:
+            cfg = write_config(args, cfg_path, cfg, result)
+        except (ValueError, OSError) as exc:
+            print(f"write-config failed: {exc}", file=sys.stderr)
+            return 2
+        wrote = tilde(home, str(cfg_path))
+        result = discover(args, home, cfg, cfg_path, None)
+        result["wrote_config"] = wrote
+
+    check = None
+    if args.check:
+        check = run_check(result, cfg, cfg_error, home)
+        result["check"] = check
+
+    if args.human:
+        print(human(result, check, wrote))
+    else:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if not check or check["ok"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
