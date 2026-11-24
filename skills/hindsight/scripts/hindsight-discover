@@ -13,6 +13,7 @@ import argparse
 import fnmatch
 import glob
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -57,9 +58,12 @@ OPENCODE_TABLES = ("session_v2", "session")
 
 
 def iso(ts: float | None) -> str | None:
-    if ts is None:
+    if ts is None or isinstance(ts, bool) or not math.isfinite(ts):
         return None
-    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def expand(home: Path, pattern: str) -> str:
@@ -71,17 +75,23 @@ def expand(home: Path, pattern: str) -> str:
 
 
 def tilde(home: Path, text: str) -> str:
-    h = str(home)
-    return "~" + text[len(h):] if text.startswith(h) else text
+    h = str(home).rstrip(os.sep)
+    if not h:
+        return text
+    if text == h:
+        return "~"
+    if text.startswith(h + os.sep):
+        return "~" + text[len(h):]
+    return text
 
 
 def excluded(path: str, excludes: list[str]) -> bool:
     return any(fnmatch.fnmatch(path, pat) for pat in excludes)
 
 
-def find_files(home: Path, pattern: str, excludes: list[str]) -> list[str]:
+def find_files(home: Path, pattern: str, excludes: list[str], *, include_hidden: bool = False) -> list[str]:
     found = set()
-    for p in glob.glob(expand(home, pattern), recursive=True):
+    for p in glob.glob(expand(home, pattern), recursive=True, include_hidden=include_hidden):
         if os.path.isfile(p) and not excluded(p, excludes):
             found.add(os.path.realpath(p))
     return sorted(found)
@@ -100,7 +110,8 @@ def span(paths: list[str]) -> tuple[float | None, float | None]:
 def scan_files(home: Path, name: str, excludes: list[str]) -> dict:
     kinds: dict[str, list[str]] = {}
     for kind, pattern in PATTERNS[name]:
-        kinds.setdefault(kind, []).extend(find_files(home, pattern, excludes))
+        hidden = name == "antigravity" and "**" in pattern
+        kinds.setdefault(kind, []).extend(find_files(home, pattern, excludes, include_hidden=hidden))
     allfiles = sorted({p for v in kinds.values() for p in v})
     lo, hi = span(allfiles)
     info: dict = {
@@ -116,8 +127,17 @@ def scan_files(home: Path, name: str, excludes: list[str]) -> dict:
     return info
 
 
-def to_seconds(value: float) -> float:
-    return value / 1000.0 if value > 1e11 else float(value)
+def to_seconds(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(num):
+        return None
+    sec = num / 1000.0 if num > 1e11 else num
+    return sec if iso(sec) is not None else None
 
 
 def scan_opencode(home: Path) -> dict:
@@ -134,8 +154,9 @@ def scan_opencode(home: Path) -> dict:
     info["found"] = True
     info["readable"] = False
     try:
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0)
-    except sqlite3.Error as exc:
+        uri = Path(db).resolve().as_uri() + "?mode=ro"
+        con = sqlite3.connect(uri, uri=True, timeout=1.0)
+    except (sqlite3.Error, OSError, ValueError) as exc:
         info["error"] = type(exc).__name__
         return info
     try:
@@ -281,7 +302,7 @@ def discover(args: argparse.Namespace, home: Path, cfg: dict | None, cfg_path: P
     if cfg_view.get("queries_ref"):
         ref = cfg_view["queries_ref"]
         exists = isinstance(ref, str) and os.path.isfile(expand(home, ref))
-        overlays["queries_ref"] = {"path": ref if isinstance(ref, str) else None, "exists": exists}
+        overlays["queries_ref"] = {"path": tilde(home, ref) if isinstance(ref, str) else None, "exists": exists}
 
     found = [n for n, v in harnesses.items() if v["found"] and v.get("readable", True)]
     missing = [n for n in harnesses if n not in found]
@@ -330,7 +351,9 @@ def run_check(result: dict, cfg: dict | None, cfg_error: str | None, home: Path)
         for name, entry in harness_cfg.items():
             if name not in HARNESSES:
                 errors.append(f"unknown harness in config: {name}")
-            elif isinstance(entry, dict) and entry.get("enabled", True) is not False:
+            elif not isinstance(entry, dict):
+                errors.append(f"harness config entry must be an object: {name}")
+            elif entry.get("enabled", True) is not False:
                 v = result["harnesses"].get(name, {})
                 if not v.get("found") or v.get("readable") is False:
                     errors.append(f"enabled harness has no readable sessions: {name}")
@@ -406,7 +429,7 @@ def human(result: dict, check: dict | None, wrote: str | None) -> str:
     lines = ["Hindsight coverage"]
     lines.append(f"  config: {result['config_path']} ({'found' if cov['config_exists'] else 'absent'})")
     for name, v in result["harnesses"].items():
-        if v["found"]:
+        if v["found"] and v.get("readable", True):
             extra = ""
             if name == "claude_code":
                 extra = f" ({v['parent_sessions']} parent, {v['subagent_files']} subagent)"
@@ -414,6 +437,8 @@ def human(result: dict, check: dict | None, wrote: str | None) -> str:
                 f"  [x] {LABELS[name]}: {v['session_files']} sessions{extra}, "
                 f"{v['earliest_utc']} to {v['latest_utc']}"
             )
+        elif v["found"]:
+            lines.append(f"  [!] {LABELS[name]}: unreadable ({v.get('error', 'error')})")
         else:
             lines.append(f"  [ ] {LABELS[name]}: not found")
     for name in cov["disabled_harnesses"]:
@@ -463,6 +488,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    for item in args.extra_glob or []:
+        key, sep, pat = item.partition("=")
+        if not sep or not key or not pat:
+            print(f"--extra-glob needs NAME=GLOB, got: {item!r}", file=sys.stderr)
+            return 2
     home = Path(args.home).expanduser() if args.home else Path.home()
     if args.config:
         cfg_path = Path(args.config).expanduser()

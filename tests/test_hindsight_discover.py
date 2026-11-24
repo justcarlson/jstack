@@ -61,7 +61,7 @@ def full_home(home: Path) -> Path:
     touch(home / ".claude/projects/proj-a/s1/subagents/agent-1.jsonl", T0 + 3 * DAY)
     touch(home / ".codex/sessions/2026/11/01/rollout-2026-11-01T00-00-00-aaa.jsonl", T0 - 5 * DAY)
     touch(home / ".codex/archived_sessions/rollout-2026-10-01T00-00-00-bbb.jsonl.zst", T0 - 9 * DAY)
-    touch(home / ".gemini/antigravity-cli/brain/x/transcript.jsonl", T0 + 4 * DAY)
+    touch(home / ".gemini/antigravity-cli/brain/x/.system_generated/logs/transcript.jsonl", T0 + 4 * DAY)
     touch(
         home / ".t3/userdata/providers/antigravity/hash/antigravity-acp/brain/uuid/.system_generated/logs/transcript.jsonl",
         T0 + 5 * DAY,
@@ -336,3 +336,71 @@ def test_script_is_executable_and_stdlib_only():
     assert SCRIPT.read_text().startswith("#!/usr/bin/env python3\n")
     proc = subprocess.run([sys.executable, "-m", "py_compile", str(SCRIPT)], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
+
+
+def test_opencode_path_with_hash_stays_read_only(tmp_path: Path):
+    special_home = tmp_path / "home#1"
+    special_home.mkdir()
+    make_opencode(special_home, rows=2)
+    before = sorted(p.name for p in tmp_path.iterdir())
+    out = json.loads(run(special_home).stdout)
+    after = sorted(p.name for p in tmp_path.iterdir())
+    assert after == before
+    assert out["harnesses"]["opencode"]["readable"] is True
+    assert out["harnesses"]["opencode"]["sessions"] == 2
+
+
+def test_opencode_bad_timestamps_degrade_gracefully(home: Path):
+    db = home / ".local" / "share" / "opencode" / "opencode.db"
+    db.parent.mkdir(parents=True)
+    con = sqlite3.connect(db)
+    con.execute("create table session_v2 (id text primary key, time_created text)")
+    con.execute("insert into session_v2 values ('s1', 'not-a-number')")
+    con.execute("insert into session_v2 values ('s2', '9999999999999999999999')")
+    con.commit()
+    con.close()
+    oc = json.loads(run(home).stdout)["harnesses"]["opencode"]
+    assert oc["readable"] is True
+    assert oc["sessions"] == 2
+    assert oc["earliest_utc"] is None and oc["latest_utc"] is None
+
+
+def test_opencode_locked_db_degrades_and_human_shows_unreadable(home: Path):
+    db = make_opencode(home, rows=2)
+    locker = sqlite3.connect(db, isolation_level=None)
+    locker.execute("BEGIN EXCLUSIVE")
+    try:
+        out = json.loads(run(home).stdout)
+        oc = out["harnesses"]["opencode"]
+        assert oc["found"] is True and oc["readable"] is False
+        assert "error" in oc
+        human_out = run(home, "--human").stdout
+        assert "[x] OpenCode" not in human_out
+        assert "[!] OpenCode: unreadable (" in human_out
+    finally:
+        locker.execute("ROLLBACK")
+        locker.close()
+
+
+def test_tilde_path_boundary_and_queries_ref_redaction(tmp_path: Path):
+    user_home = tmp_path / "user"
+    sibling = tmp_path / "user-other"
+    user_home.mkdir()
+    sibling.mkdir()
+    q = user_home / "queries.md"
+    q.write_text("-- saved\n")
+    cfg = sibling / "sources.json"
+    cfg.write_text(json.dumps({"queries_ref": str(q)}))
+    out = json.loads(run(user_home, cfg=cfg).stdout)
+    assert out["config_path"] == str(cfg)
+    assert out["configured_overlays"]["queries_ref"] == {"exists": True, "path": "~/queries.md"}
+
+
+def test_extra_glob_validated_without_write_config_and_non_dict_harness_rejected(full_home: Path):
+    proc = run(full_home, "--extra-glob", "missing-equals", expect=2)
+    assert "NAME=GLOB" in proc.stderr
+    cfg = full_home / ".config/hindsight/sources.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(json.dumps({"harnesses": {"pi": False}}))
+    errors = json.loads(run(full_home, "--check", expect=1).stdout)["check"]["errors"]
+    assert "harness config entry must be an object: pi" in errors
