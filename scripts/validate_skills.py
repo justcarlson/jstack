@@ -127,7 +127,10 @@ def skill_dirs(root: Path) -> list[Path]:
 def measure(root: Path) -> dict[str, dict[str, int]]:
     sizes = {}
     for d in skill_dirs(root):
-        text = (d / "SKILL.md").read_text(encoding="utf-8")
+        skill_md = d / "SKILL.md"
+        if not skill_md.is_file():
+            raise FileNotFoundError(f"skills/{d.name}/SKILL.md is missing")
+        text = skill_md.read_text(encoding="utf-8")
         fm, body = split_frontmatter(text)
         meta = parse_frontmatter(fm)
         sizes[d.name] = {
@@ -256,26 +259,42 @@ def check_manifests(root: Path) -> list[str]:
 
     if not claude_market.get("plugins"):
         errors.append(".claude-plugin/marketplace.json: plugins must be non-empty")
+    for i, plugin in enumerate(claude_market.get("plugins", [])):
+        if not isinstance(plugin, dict):
+            errors.append(f".claude-plugin/marketplace.json plugins[{i}]: must be an object")
+            continue
+        if plugin.get("name") != claude_plugin.get("name"):
+            errors.append(f".claude-plugin/marketplace.json plugins[{i}]: name must match .claude-plugin/plugin.json")
+        src_path = plugin.get("source")
+        if not isinstance(src_path, str) or not src_path or not (root / src_path / ".claude-plugin/plugin.json").is_file():
+            errors.append(
+                f".claude-plugin/marketplace.json plugins[{i}]: source {src_path!r} must contain .claude-plugin/plugin.json"
+            )
     if not codex_market.get("plugins"):
         errors.append(".agents/plugins/marketplace.json: plugins must be non-empty")
     for i, plugin in enumerate(codex_market.get("plugins", [])):
+        if not isinstance(plugin, dict):
+            errors.append(f".agents/plugins/marketplace.json plugins[{i}]: must be an object")
+            continue
         if plugin.get("name") != codex_plugin.get("name"):
             errors.append(f".agents/plugins/marketplace.json plugins[{i}]: name must match .codex-plugin/plugin.json")
-        src_path = (plugin.get("source") or {}).get("path", "")
-        if not src_path or not (root / src_path / ".codex-plugin/plugin.json").is_file():
+        src_obj = plugin.get("source")
+        src_path = src_obj.get("path", "") if isinstance(src_obj, dict) else ""
+        if not isinstance(src_path, str) or not src_path or not (root / src_path / ".codex-plugin/plugin.json").is_file():
             errors.append(
                 f".agents/plugins/marketplace.json plugins[{i}]: source.path {src_path!r} must contain .codex-plugin/plugin.json"
             )
     for rel, data in ((".claude-plugin/plugin.json", claude_plugin), (".codex-plugin/plugin.json", codex_plugin)):
         skills_ref = data.get("skills")
-        if skills_ref and not (root / skills_ref).is_dir():
-            errors.append(f"{rel}: skills path {skills_ref!r} does not exist")
+        if not isinstance(skills_ref, str) or not skills_ref.strip() or not (root / skills_ref).is_dir():
+            errors.append(f"{rel}: skills path {skills_ref!r} must be a non-empty existing directory")
     icon = root / ".claude-plugin/icon.png"
     if not icon.is_file():
         errors.append(".claude-plugin/icon.png is missing")
-    logo = (codex_plugin.get("interface") or {}).get("logo")
-    if logo and not (root / logo).is_file():
-        errors.append(f".codex-plugin/plugin.json: interface.logo {logo!r} does not exist")
+    iface = codex_plugin.get("interface")
+    logo = iface.get("logo") if isinstance(iface, dict) else None
+    if not isinstance(logo, str) or not logo.strip() or not (root / logo).is_file():
+        errors.append(f".codex-plugin/plugin.json: interface.logo {logo!r} must be a non-empty existing file")
 
     versions = manifest_versions(root)
     if any(not v for v in versions.values()):

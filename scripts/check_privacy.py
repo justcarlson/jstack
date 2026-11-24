@@ -8,7 +8,7 @@ from the environment) adds a private pattern; it is never printed.
 Usage:
   check_privacy.py                 # working tree only
   check_privacy.py --range A..B    # working tree + commits in A..B
-  check_privacy.py --all           # working tree + every commit (including HEAD)
+  check_privacy.py --all           # working tree + every commit (including HEAD & tags)
 """
 
 from __future__ import annotations
@@ -79,21 +79,31 @@ def rules(deny: str | None) -> list[tuple[str, re.Pattern[str]]]:
 
 def scan_text(text: str, where: str, active: list[tuple[str, re.Pattern[str]]]) -> list[Finding]:
     found = []
-    for lineno, line in enumerate(text.splitlines(), 1):
+    for lineno, line in enumerate(text.split("\n"), 1):
         for rule, pattern in active:
             if pattern.search(line):
                 found.append(Finding(f"{where}:{lineno}", rule))
     return found
 
 
-def git(root: Path, *args: str) -> str:
+def scan_path_markers(rel: str, where: str, active: list[tuple[str, re.Pattern[str]]]) -> list[Finding]:
+    found = []
+    for rule, pattern in active:
+        if pattern.search(rel):
+            found.append(Finding(f"{where} (path)", rule))
+    return found
+
+
+def git_bytes(root: Path, *args: str) -> bytes:
     return subprocess.run(
         ["git", "-c", "core.quotepath=false", "-C", str(root), *args],
         check=True,
         capture_output=True,
-        text=True,
-        errors="replace",
     ).stdout
+
+
+def git(root: Path, *args: str) -> str:
+    return git_bytes(root, *args).decode("utf-8", errors="replace")
 
 
 def scan_tree(root: Path, active: list[tuple[str, re.Pattern[str]]]) -> list[Finding]:
@@ -103,6 +113,7 @@ def scan_tree(root: Path, active: list[tuple[str, re.Pattern[str]]]) -> list[Fin
         path = root / rel
         if rule := forbidden_file(rel):
             found.append(Finding(rel, rule))
+        found.extend(scan_path_markers(rel, rel, active))
         if path.is_symlink():
             try:
                 target = os.readlink(path)
@@ -119,7 +130,7 @@ def scan_tree(root: Path, active: list[tuple[str, re.Pattern[str]]]) -> list[Fin
     return found
 
 
-def scan_history_names(root: Path, rev: list[str]) -> list[Finding]:
+def scan_history_names(root: Path, rev: list[str], active: list[tuple[str, re.Pattern[str]]]) -> list[Finding]:
     """Check every added, modified, copied or renamed path in history (including binary, empty and merge commits)."""
     out = git(
         root,
@@ -142,13 +153,36 @@ def scan_history_names(root: Path, rev: list[str]) -> list[Finding]:
                 continue
             if rule := forbidden_file(rel):
                 found.append(Finding(f"commit {short} {rel}", rule))
+            found.extend(scan_path_markers(rel, f"commit {short} {rel}", active))
     return found
 
 
-def scan_history(root: Path, rev: list[str], active: list[tuple[str, re.Pattern[str]]]) -> list[Finding]:
+def scan_tags(root: Path, active: list[tuple[str, re.Pattern[str]]]) -> list[Finding]:
+    raw = git_bytes(root, "for-each-ref", "refs/tags", "--format=%(refname:short)%1f%(contents)%00")
+    found = []
+    for block in raw.split(b"\x00"):
+        if not block:
+            continue
+        name_b, sep, body_b = block.partition(b"\x1f")
+        if not sep:
+            continue
+        name = name_b.decode("utf-8", errors="replace").lstrip("\n")
+        body = body_b.decode("utf-8", errors="replace")
+        found.extend(scan_path_markers(name, f"tag {name}", active))
+        found.extend(scan_text(body, f"tag {name} message", active))
+    return found
+
+
+def scan_history(
+    root: Path,
+    rev: list[str],
+    active: list[tuple[str, re.Pattern[str]]],
+    *,
+    include_tags: bool = False,
+) -> list[Finding]:
     """Scan commit metadata/messages, added lines (including merges), and added/modified file names."""
-    found = scan_history_names(root, rev)
-    out = git(
+    found = scan_history_names(root, rev, active)
+    raw = git_bytes(
         root,
         "log",
         *rev,
@@ -160,16 +194,17 @@ def scan_history(root: Path, rev: list[str], active: list[tuple[str, re.Pattern[
         "--format=%x00commit %H%n%an <%ae>%n%cn <%ce>%x1f%B%x00",
         "-p",
     )
-    for block in out.split("\0commit ")[1:]:
-        sha, _, rest = block.partition("\n")
-        short = sha[:12]
-        header_and_msg, _, diff = rest.partition("\0")
-        meta, _, message = header_and_msg.partition("\x1f")
-        found.extend(scan_text(meta, f"commit {short} metadata", active))
-        found.extend(scan_text(message, f"commit {short} message", active))
+    for block in raw.split(b"\x00commit ")[1:]:
+        sha_b, _, rest = block.partition(b"\n")
+        short = sha_b.decode("utf-8", errors="replace")[:12]
+        header_and_msg_b, _, diff_b = rest.partition(b"\x00")
+        meta_b, _, message_b = header_and_msg_b.partition(b"\x1f")
+        found.extend(scan_text(meta_b.decode("utf-8", errors="replace"), f"commit {short} metadata", active))
+        found.extend(scan_text(message_b.decode("utf-8", errors="replace"), f"commit {short} message", active))
         current = "?"
         in_hunk = False
-        for line in diff.splitlines():
+        for raw_line in diff_b.split(b"\n"):
+            line = raw_line.decode("utf-8", errors="replace")
             if line.startswith("diff --git "):
                 in_hunk = False
                 current = "?"
@@ -178,9 +213,12 @@ def scan_history(root: Path, rev: list[str], active: list[tuple[str, re.Pattern[
             elif line.startswith("@@ "):
                 in_hunk = True
             elif in_hunk and line.startswith("+"):
+                added = line[1:]
                 for rule, pattern in active:
-                    if pattern.search(line[1:]):
+                    if pattern.search(added):
                         found.append(Finding(f"commit {short} {current}", rule))
+    if include_tags:
+        found.extend(scan_tags(root, active))
     return found
 
 
@@ -207,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.range:
         findings += scan_history(root, [args.range], active)
     elif args.all:
-        findings += scan_history(root, ["--all", "HEAD"], active)
+        findings += scan_history(root, ["--all", "HEAD"], active, include_tags=True)
 
     unique = list(dict.fromkeys(str(f) for f in findings))
     for item in unique:

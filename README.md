@@ -30,11 +30,11 @@ cd jstack
 | Client | Folder | Detected by |
 | --- | --- | --- |
 | `claude` | `~/.claude/skills` | `~/.claude` |
-| `codex` | `$CODEX_HOME/skills` (default `~/.codex/skills`) | `$CODEX_HOME` |
+| `codex` | `$CODEX_HOME/skills` (default `~/.codex/skills`) | `$CODEX_HOME` or `~/.codex` |
 | `antigravity` | `~/.gemini/config/skills` | `~/.gemini` or T3's `~/.t3/userdata/providers/antigravity` |
 | `opencode` | `~/.config/opencode/skills` | `~/.config/opencode` |
 
-`--only` adds the sibling skills a skill calls, so `--only full-send` also installs `sol-loop`, `file-pr`, `babysit-pr`, `leaving-pr-comments` and `pr`. Pass `--no-deps` to skip them, or `--mode copy` to copy instead of link. The installer needs only Python 3 and puts nothing on your `$PATH`.
+`--only` adds the sibling skills a skill calls, so `--only full-send` also installs `sol-loop`, `file-pr`, `babysit-pr`, `leaving-pr-comments` and `pr`. Pass `--no-deps` to skip them, or `--mode copy` to copy instead of link (pair `--check` with `--mode copy` when checking copies). The installer needs only Python 3 and puts nothing on your `$PATH`.
 
 As a plugin:
 

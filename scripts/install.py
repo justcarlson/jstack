@@ -124,11 +124,11 @@ def targets(home: Path, client: str, env: dict[str, str]) -> list[Target]:
 
 
 def tree_digest(src: Path) -> str:
-    """Deterministic SHA-256 of a skill folder, ignoring bytecode and Finder noise."""
+    """Deterministic SHA-256 of a skill folder, ignoring install markers, bytecode and Finder noise."""
     h = hashlib.sha256()
     for path in sorted(src.rglob("*")):
         rel = path.relative_to(src)
-        if any(part == "__pycache__" or part == ".DS_Store" for part in rel.parts):
+        if any(part in ("__pycache__", ".DS_Store", MARKER) for part in rel.parts):
             continue
         if path.suffix in (".pyc", ".pyo", ".pyd"):
             continue
@@ -141,9 +141,9 @@ def tree_digest(src: Path) -> str:
 def owns_link(entry: Path) -> bool:
     """True only for entries this checkout installed.
 
-    A symlink must point directly at a child of this repo's skills/ tree. A real
-    folder must hold a non-symlink marker naming this repo's absolute path and
-    matching entry.name. Anything else belongs to the user.
+    A symlink must point directly at the same-named child of this repo's skills/
+    tree. A real folder must hold a non-symlink marker naming this repo's
+    absolute path and matching entry.name. Anything else belongs to the user.
     """
     if entry.name in PROTECTED:
         return False
@@ -152,7 +152,7 @@ def owns_link(entry: Path) -> bool:
             dest = entry.resolve(strict=False)
         except (OSError, RuntimeError):
             return False
-        return dest.parent == SKILLS_DIR.resolve()
+        return dest.parent == SKILLS_DIR.resolve() and dest.name == entry.name
     marker = entry / MARKER
     if entry.is_dir() and not marker.is_symlink() and marker.is_file():
         try:
@@ -169,6 +169,20 @@ def owns_link(entry: Path) -> bool:
     return False
 
 
+def is_modified_copy(entry: Path) -> bool:
+    """True when an owned copy-mode folder has local edits relative to its installed digest."""
+    if entry.is_symlink() or not entry.is_dir():
+        return False
+    marker = entry / MARKER
+    if marker.is_symlink() or not marker.is_file():
+        return False
+    try:
+        recorded = json.loads(marker.read_text()).get("digest")
+    except (OSError, ValueError):
+        return False
+    return bool(recorded) and tree_digest(entry) != recorded
+
+
 def status(entry: Path, name: str, mode: str) -> str:
     src = (SKILLS_DIR / name).resolve()
     if not entry.exists() and not entry.is_symlink():
@@ -182,7 +196,12 @@ def status(entry: Path, name: str, mode: str) -> str:
             return "stale"
         return "ok" if mode == "symlink" else "mode"
     data = json.loads((entry / MARKER).read_text())
-    if data.get("version") != version() or data.get("digest") != tree_digest(src) or data.get("skill") != name:
+    recorded = data.get("digest")
+    current = tree_digest(entry)
+    target = tree_digest(src)
+    if recorded and current != recorded and current != target:
+        return "modified"
+    if data.get("version") != version() or recorded != target or current != target or data.get("skill") != name:
         return "stale"
     return "ok" if mode == "copy" else "mode"
 
@@ -258,6 +277,10 @@ def run(argv: list[str] | None = None, environ: dict[str, str] | None = None) ->
                 if args.only is not None and entry.name not in names:
                     continue
                 if owns_link(entry):
+                    if is_modified_copy(entry):
+                        print(f"{label}/{entry.name}: skipped, modified locally; remove it manually", file=sys.stderr)
+                        rc = 1
+                        continue
                     remove(entry)
                     print(f"{label}/{entry.name}: removed")
             continue
@@ -268,14 +291,20 @@ def run(argv: list[str] | None = None, environ: dict[str, str] | None = None) ->
                 print(f"{label}/{name}: {state}")
                 rc |= state != "ok"
                 continue
-            if state == "conflict":
-                print(f"{label}/{name}: skipped, not installed by jstack", file=sys.stderr)
+            if state in ("conflict", "modified"):
+                reason = "modified locally; remove it first to replace" if state == "modified" else "not installed by jstack"
+                print(f"{label}/{name}: skipped, {reason}", file=sys.stderr)
                 rc = 1
                 continue
             if state == "ok":
                 print(f"{label}/{name}: ok")
                 continue
-            target.path.mkdir(parents=True, exist_ok=True)
+            try:
+                target.path.mkdir(parents=True, exist_ok=True)
+            except FileExistsError:
+                print(f"{label}: skills path is not a directory", file=sys.stderr)
+                rc = 1
+                break
             if state != "missing":
                 remove(entry)
             place(entry, name, args.mode)

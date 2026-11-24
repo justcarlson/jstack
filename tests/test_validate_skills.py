@@ -465,3 +465,24 @@ def test_history_catches_binary_empty_nonascii_merge_plusplus_and_author(tmp_pat
     assert run_privacy(repo3, "--require-deny").returncode == 1
     assert run_privacy(repo3, "--require-deny", deny="alpha|moonbase\n").returncode == 1
     assert run_privacy(repo3, "--require-deny", deny="\n").returncode == 1
+
+    # 4. Pathname marker in tree & history, lone CR in added diff line, and annotated tag message
+    repo4 = git_repo(tmp_path / "p")
+    bad_dir = repo4 / TAILNET
+    bad_dir.mkdir()
+    (bad_dir / "note.txt").write_text("clean\n")
+    assert run_privacy(repo4).returncode == 1
+    git(repo4, "add", ".")
+    git(repo4, "commit", "-qm", "add host folder")
+    git(repo4, "rm", "-rq", TAILNET)
+    (repo4 / "cr.txt").write_bytes(b"ok\r" + HOME_PATH.encode() + b"\n")
+    git(repo4, "add", "cr.txt")
+    git(repo4, "commit", "-qm", "add cr")
+    git(repo4, "rm", "-q", "cr.txt")
+    git(repo4, "commit", "-qm", "clean")
+    git(repo4, "tag", "-a", "v0.0.1-test", "-m", f"release from {HOME_PATH}")
+    proc4 = run_privacy(repo4, "--all")
+    assert proc4.returncode == 1
+    assert "(path): tailnet hostname" in proc4.stdout
+    assert "cr.txt: linux home path" in proc4.stdout
+    assert "tag v0.0.1-test message:1: linux home path" in proc4.stdout

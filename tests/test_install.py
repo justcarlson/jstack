@@ -191,10 +191,13 @@ def test_uninstall_only_keeps_dependencies(home: Path):
 def test_owns_link_accepts_dangling_link_into_repo(home: Path):
     target = home / ".claude" / "skills"
     target.mkdir(parents=True)
-    (target / "gone").symlink_to(SKILLS / "gone-skill")
+    (target / "gone").symlink_to(SKILLS / "gone")
     assert install.owns_link(target / "gone")
+    # A user-created alias symlink with a different name is not owned.
+    (target / "my-pr").symlink_to(SKILLS / "pr")
+    assert not install.owns_link(target / "my-pr")
     run(home, "--client", "claude", "--uninstall")
-    assert entries(target) == []
+    assert entries(target) == ["my-pr"]
 
 
 def test_all_detects_clients(tmp_path: Path):
@@ -320,14 +323,34 @@ def test_owns_link_guards_root_symlink_copied_rename_relative_source_and_symlink
     assert entries(target) == sorted(["my-jstack-root", "my-council", "rel-skill", "sym-skill"])
 
 
-def test_copy_mode_tracks_digest_and_skips_pycache(home: Path):
+def test_copy_mode_tracks_digest_and_skips_pycache(home: Path, capsys):
     assert run(home, "--client", "claude", "--mode", "copy", "--only", "pr") == 0
-    marker = home / ".claude" / "skills" / "pr" / install.MARKER
+    entry = home / ".claude" / "skills" / "pr"
+    marker = entry / install.MARKER
     data = json.loads(marker.read_text())
     assert len(data["digest"]) == 64
-    assert not list((home / ".claude" / "skills" / "pr").rglob("__pycache__"))
-    data["digest"] = "0" * 64
+    assert not list(entry.rglob("__pycache__"))
+    # Locally edited copy reports modified and is never silently overwritten or uninstalled.
+    (entry / "SKILL.md").write_text("my local edit\n")
+    assert run(home, "--client", "claude", "--mode", "copy", "--only", "pr", "--check") == 1
+    assert "pr: modified" in capsys.readouterr().out
+    assert run(home, "--client", "claude", "--mode", "copy", "--only", "pr") == 1
+    assert run(home, "--client", "claude", "--only", "pr", "--uninstall") == 1
+    assert (entry / "SKILL.md").read_text() == "my local edit\n"
+    # An unmodified older upstream copy (on-disk digest matches recorded digest, differs from source) is stale and refreshes.
+    (entry / "SKILL.md").write_text("older upstream version\n")
+    data["digest"] = install.tree_digest(entry)
     marker.write_text(json.dumps(data))
     assert run(home, "--client", "claude", "--mode", "copy", "--only", "pr", "--check") == 1
+    assert "pr: stale" in capsys.readouterr().out
     assert run(home, "--client", "claude", "--mode", "copy", "--only", "pr") == 0
     assert run(home, "--client", "claude", "--mode", "copy", "--only", "pr", "--check") == 0
+    assert (entry / "SKILL.md").read_bytes() == (SKILLS / "pr" / "SKILL.md").read_bytes()
+
+
+def test_file_at_skills_path_reports_error_cleanly(tmp_path: Path, capsys):
+    h = tmp_path / "h"
+    (h / ".claude").mkdir(parents=True)
+    (h / ".claude" / "skills").write_text("not a dir\n")
+    assert run(h, "--client", "claude", "--only", "pr") == 1
+    assert "not a directory" in capsys.readouterr().err
