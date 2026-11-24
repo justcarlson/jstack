@@ -1,0 +1,76 @@
+Let --until ready finish when no gating bot ever reviewed the PR
+(from https://github.com/t3dotgg/tstack/pull/16, preserving executable mode on
+skills/babysit-pr/scripts/pr-wait).
+
+diff --git a/skills/babysit-pr/SKILL.md b/skills/babysit-pr/SKILL.md
+--- a/skills/babysit-pr/SKILL.md
++++ b/skills/babysit-pr/SKILL.md
+@@ -49,9 +49,10 @@
+ met or the PR merges, 1 when it needs you (a required check failed, conflicts,
+ unresolved threads, PR closed), and 2 on bad input.
+ 
+ - `ready` (default): required checks green, Greptile or Macroscope reviewed the
+-  head, and no unresolved threads. Use this to babysit.
+-- `green`: required checks only. Use it when the repo has no Greptile or
+-  Macroscope.
++  head — or no gating bot has ever reviewed the PR — and no unresolved threads.
++  Use this to babysit.
++- `green`: required checks only. Use it when you only care about checks, not
++  review bots.
+ - `any-change`: exit on the first event.
+ 
+ In Claude Code, run it with the Monitor tool (`timeout_ms: 3600000`), so each
+diff --git a/skills/babysit-pr/scripts/pr-wait b/skills/babysit-pr/scripts/pr-wait
+--- a/skills/babysit-pr/scripts/pr-wait
++++ b/skills/babysit-pr/scripts/pr-wait
+@@ -12,7 +12,9 @@
+   green       required checks passed on the current head (every CI check when
+               the base branch requires none)
+   ready      green, Greptile or Macroscope reviewed the current head, and no
+-              review thread is unresolved (default)
++              review thread is unresolved (default). When no gating bot has
++              ever reviewed the PR, ready falls back to green: a repo without
++              Greptile or Macroscope can finish.
+   any-change  stop after the first poll that prints an event
+ 
+ Exit codes
+@@ -263,7 +265,8 @@
+         self.baseline = state is None
+         # Set once a poll has recorded every comment, review and thread.
+         self.recorded = False
+-        self.state: Json = state or {"reported": [], "summaries": {}, "base_oid": None, "merge_state": None}
++        self.state: Json = state or {"reported": [], "summaries": {}, "base_oid": None,
++                                    "merge_state": None, "gating_seen": False}
+         self.reported: set[str] = set(self.state["reported"])
+         self.printed: set[str] = set()
+         self.events = 0
+@@ -439,6 +442,11 @@
+             else:
+                 done = on_head or any(short in s["body"] for s in summaries)
+             seen = bool(own_checks or summaries or own_reviews)
++            # Remember that a gating bot exists on this PR, across restarts:
++            # a bot that reviewed an earlier head still gates, since it is
++            # installed and just has not reviewed this head yet.
++            if bot in GATING_BOTS and seen:
++                self.state["gating_seen"] = True
+             if bot in ADVISORY_BOTS and own_checks:
+                 desc = next(iter(own_checks.values()))
+                 bot_status[bot] = f"{bot} {desc['description'] or desc['bucket']} (advisory)"
+@@ -524,6 +532,17 @@
+                     self.finish(1, [behind_line])
+                 self.reported.add(checks_key)
+                 self.finish(0, [f"ready on {short}: {summary}{self.behind(base, base_oid, head)}"])
++            # No gating bot has ever reviewed this PR, so there is nothing to
++            # wait for: ready falls back to green. A bot seen on an earlier
++            # head still gates (see above), as does a bot with checks pending.
++            if green and self.until == "ready" and not reviewed and not self.state.get("gating_seen"):
++                if unresolved:
++                    self.finish(1, [f"blocked by {len(unresolved)} unresolved threads on {short}: {' '.join(unresolved)}"])
++                if merge_state == "BEHIND":
++                    self.finish(1, [behind_line])
++                self.reported.add(checks_key)
++                self.finish(0, [f"ready on {short}: {summary}{self.behind(base, base_oid, head)} "
++                                f"(no Greptile or Macroscope on this PR)"])
+         if all_done and (stable or self.baseline):
+             self.emit(checks_key, f"checks finished on {short}: {summary}")
+         if self.until == "any-change" and self.events:
