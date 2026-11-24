@@ -28,7 +28,7 @@ def run(home: Path, *args: str, cfg: Path | None = None, expect: int | None = 0)
     cmd += ["--config", str(cfg or home / ".config" / "hindsight" / "sources.json")]
     cmd += list(args)
     env = {k: v for k, v in os.environ.items() if k != "HINDSIGHT_CONFIG"}
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60)
+    proc = subprocess.run(cmd, check=False, capture_output=True, text=True, env=env, timeout=60)
     if expect is not None:
         assert proc.returncode == expect, proc.stderr + proc.stdout
     return proc
@@ -316,7 +316,7 @@ def test_config_env_var_is_respected(full_home: Path, tmp_path: Path):
     env = {**os.environ, "HINDSIGHT_CONFIG": str(cfg)}
     proc = subprocess.run(
         [sys.executable, str(SCRIPT), "--home", str(full_home), "--no-gh"],
-        capture_output=True, text=True, env=env, timeout=60,
+        check=False, capture_output=True, text=True, env=env, timeout=60,
     )
     assert proc.returncode == 0
     assert "pi" in json.loads(proc.stdout)["coverage"]["disabled_harnesses"]
@@ -334,7 +334,7 @@ def test_human_summary(full_home: Path):
 def test_script_is_executable_and_stdlib_only():
     assert os.access(SCRIPT, os.X_OK)
     assert SCRIPT.read_text().startswith("#!/usr/bin/env python3\n")
-    proc = subprocess.run([sys.executable, "-m", "py_compile", str(SCRIPT)], capture_output=True, text=True)
+    proc = subprocess.run([sys.executable, "-m", "py_compile", str(SCRIPT)], check=False, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
 
 

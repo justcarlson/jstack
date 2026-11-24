@@ -1,0 +1,22 @@
+{
+  "_comment": "Caps are UTF-8 bytes. Grandfathered ceilings are exact current sizes and only ratchet down: shrink a skill, then run scripts/validate_skills.py --write-budget.",
+  "caps": {
+    "description_bytes": 250,
+    "body_bytes": 6144
+  },
+  "grandfathered": {
+    "epic": {
+      "body_bytes": 8588
+    },
+    "full-send": {
+      "body_bytes": 6459
+    },
+    "omarchy-dev": {
+      "description_bytes": 380,
+      "body_bytes": 7929
+    },
+    "sol-loop": {
+      "body_bytes": 6346
+    }
+  }
+}

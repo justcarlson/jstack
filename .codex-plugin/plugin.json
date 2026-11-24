@@ -1,0 +1,25 @@
+{
+  "name": "jstack",
+  "version": "0.1.0",
+  "description": "17 agent skills for shipping pull requests: patched t3dotgg/tstack core, the pr body standard, and companions.",
+  "author": {
+    "name": "justcarlson"
+  },
+  "homepage": "https://github.com/justcarlson/jstack",
+  "repository": "https://github.com/justcarlson/jstack",
+  "license": "MIT",
+  "keywords": ["skills", "tstack", "pull-requests", "code-review", "ci"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "jstack",
+    "shortDescription": "Ship pull requests end to end: council, sol-loop, full-send, babysit-pr",
+    "longDescription": "A patched distribution of t3dotgg/tstack with companion skills for PR bodies, epics, retros, CI speed, upstream bugs, Omarchy VMs, and T3 worktree launches.",
+    "developerName": "justcarlson",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "defaultPrompt": ["Full send this change.", "Council this plan."],
+    "websiteURL": "https://github.com/justcarlson/jstack",
+    "logo": "./.claude-plugin/icon.png",
+    "brandColor": "#4A5D4E"
+  }
+}

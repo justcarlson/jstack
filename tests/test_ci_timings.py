@@ -5,7 +5,6 @@ import importlib.util
 import json
 import pathlib
 import sys
-import unittest.mock
 
 import pytest
 
