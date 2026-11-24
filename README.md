@@ -8,7 +8,7 @@ Not affiliated with Upstash JStack or OpenJDK `jstack`.
 
 ## Quick install
 
-With the [skills CLI](https://www.npmjs.com/package/skills), for every client it finds:
+With the [skills CLI](https://github.com/vercel-labs/skills), for every client it finds:
 
 ```sh
 npx skills add justcarlson/jstack -g
@@ -31,8 +31,8 @@ cd jstack
 | --- | --- | --- |
 | `claude` | `~/.claude/skills` | `~/.claude` |
 | `codex` | `$CODEX_HOME/skills` (default `~/.codex/skills`) | `$CODEX_HOME` or `~/.codex` |
-| `antigravity` | `~/.gemini/config/skills` | `~/.gemini` or T3's `~/.t3/userdata/providers/antigravity` |
-| `opencode` | `~/.config/opencode/skills` | `~/.config/opencode` |
+| `antigravity` | `~/.gemini/config/skills` (plus real `~/.t3/userdata/providers/antigravity/*/config/skills` folders) | `~/.gemini` or T3's `~/.t3/userdata/providers/antigravity` |
+| `opencode` | `$XDG_CONFIG_HOME/opencode/skills` (default `~/.config/opencode/skills`) | `$XDG_CONFIG_HOME/opencode` or `~/.config/opencode` |
 
 `--only` adds the sibling skills a skill calls, so `--only full-send` also installs `sol-loop`, `file-pr`, `babysit-pr`, `leaving-pr-comments` and `pr`. Pass `--no-deps` to skip them, or `--mode copy` to copy instead of link (pair `--check` with `--mode copy` when checking copies). The installer needs only Python 3 and puts nothing on your `$PATH`.
 

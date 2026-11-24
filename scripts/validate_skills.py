@@ -63,7 +63,7 @@ def _scalar(raw: str) -> str:
     if raw[0] in "[{&*!|>%@`":
         raise FrontmatterError(f"unsupported YAML value: {raw}")
     if re.search(r"(^|\s)#", raw):
-        raw = re.split(r"\s#", raw, maxsplit=1)[0].rstrip()
+        raw = re.split(r"(?:^|\s)#", raw, maxsplit=1)[0].rstrip()
     if ": " in raw:
         raise FrontmatterError(f"plain value contains ': ' (quote it): {raw}")
     return raw
@@ -243,7 +243,8 @@ def manifest_versions(root: Path) -> dict[str, str]:
         out[rel] = str(json.loads((root / rel).read_text()).get("version", "")).strip()
     market = json.loads((root / ".claude-plugin/marketplace.json").read_text())
     for i, plugin in enumerate(market.get("plugins", [])):
-        out[f".claude-plugin/marketplace.json plugins[{i}]"] = str(plugin.get("version", "")).strip()
+        if isinstance(plugin, dict):
+            out[f".claude-plugin/marketplace.json plugins[{i}]"] = str(plugin.get("version", "")).strip()
     return out
 
 
@@ -311,6 +312,13 @@ def validate(root: Path) -> list[str]:
         if path.is_symlink():
             errors.append(f"{path.relative_to(root)}: symlinks are not allowed under skills/")
     deps = sibling_deps()
+    skill_names = {d.name for d in skill_dirs(root)}
+    for owner, needed in deps.items():
+        if owner not in skill_names:
+            errors.append(f"scripts/install.py: DEPS key {owner!r} has no folder under skills/")
+        for dep in needed:
+            if dep not in skill_names:
+                errors.append(f"scripts/install.py: DEPS[{owner!r}] references unknown skill {dep!r}")
     readme = (root / "README.md").read_text(encoding="utf-8") if (root / "README.md").is_file() else ""
     for d in skill_dirs(root):
         rel = f"skills/{d.name}/SKILL.md"

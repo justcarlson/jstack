@@ -464,25 +464,40 @@ def test_history_catches_binary_empty_nonascii_merge_plusplus_and_author(tmp_pat
     (repo3 / "doc.md").write_text("codename moonbase\n")
     assert run_privacy(repo3, "--require-deny").returncode == 1
     assert run_privacy(repo3, "--require-deny", deny="alpha|moonbase\n").returncode == 1
+    assert run_privacy(repo3, "--require-deny", deny="alpha\nmoonbase\n").returncode == 1
     assert run_privacy(repo3, "--require-deny", deny="\n").returncode == 1
 
-    # 4. Pathname marker in tree & history, lone CR in added diff line, and annotated tag message
+    # 4. Pathname marker (redacted in output), binary leak, case-insensitive .ts.net, CGNAT sentence end, lone CR, and tag
     repo4 = git_repo(tmp_path / "p")
     bad_dir = repo4 / TAILNET
     bad_dir.mkdir()
     (bad_dir / "note.txt").write_text("clean\n")
-    assert run_privacy(repo4).returncode == 1
+    tree_proc = run_privacy(repo4)
+    assert tree_proc.returncode == 1
+    assert TAILNET not in tree_proc.stdout
+    assert "<redacted>" in tree_proc.stdout
     git(repo4, "add", ".")
     git(repo4, "commit", "-qm", "add host folder")
     git(repo4, "rm", "-rq", TAILNET)
     (repo4 / "cr.txt").write_bytes(b"ok\r" + HOME_PATH.encode() + b"\n")
-    git(repo4, "add", "cr.txt")
-    git(repo4, "commit", "-qm", "add cr")
-    git(repo4, "rm", "-q", "cr.txt")
+    (repo4 / "blob.bin").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00tEXt" + TAILNET.upper().encode() + b"\n")
+    cgnat_ip = "100" + ".84.12.7"
+    (repo4 / "sent.txt").write_text(f"ssh to {cgnat_ip}.\n")
+    git(repo4, "add", "cr.txt", "blob.bin", "sent.txt")
+    git(repo4, "commit", "-qm", "add leaks")
+    git(repo4, "rm", "-q", "cr.txt", "blob.bin", "sent.txt")
     git(repo4, "commit", "-qm", "clean")
     git(repo4, "tag", "-a", "v0.0.1-test", "-m", f"release from {HOME_PATH}")
     proc4 = run_privacy(repo4, "--all")
     assert proc4.returncode == 1
     assert "(path): tailnet hostname" in proc4.stdout
+    assert TAILNET not in proc4.stdout
     assert "cr.txt: linux home path" in proc4.stdout
-    assert "tag v0.0.1-test message:1: linux home path" in proc4.stdout
+    assert "blob.bin: tailnet hostname" in proc4.stdout
+    assert "sent.txt: CGNAT address" in proc4.stdout
+    assert "tag v0.0.1-test message:2: linux home path" in proc4.stdout
+
+
+def test_comment_only_description_rejected():
+    meta = vs.parse_frontmatter("name: demo\ndescription: # todo")
+    assert meta["description"] == ""

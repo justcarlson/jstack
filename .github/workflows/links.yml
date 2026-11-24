@@ -41,7 +41,7 @@ jobs:
         run: |
           set -euo pipefail
           title="Broken links"
-          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number,title \
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --author app/github-actions --state open --search "\"$title\" in:title" --json number,title \
             --jq "[.[] | select(.title == \"$title\") | .number][0] // empty")
           if [ -n "$number" ]; then
             gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file ./lychee/report.md

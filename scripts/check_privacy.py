@@ -29,8 +29,8 @@ _USER_END = r"(?![A-Za-z0-9._-])"
 MARKERS: list[tuple[str, re.Pattern[str]]] = [
     ("linux home path", re.compile(rf"/home/(?!{_SAFE_USERS}{_USER_END})[A-Za-z0-9._-]+{_USER_END}")),
     ("macOS home path", re.compile(rf"/Users/(?!{_SAFE_USERS}{_USER_END}|Shared{_USER_END})[A-Za-z0-9._-]+{_USER_END}")),
-    ("tailnet hostname", re.compile(r"(?<![<\w-])(?!example\.ts\.net)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.ts\.net\b")),
-    ("CGNAT address", re.compile(r"(?<![\d.])100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}(?![\d.])")),
+    ("tailnet hostname", re.compile(r"(?<![<\w-])(?!example\.ts\.net)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.ts\.net\b", re.IGNORECASE)),
+    ("CGNAT address", re.compile(r"(?<![\d.])100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}(?!\d|\.\d)")),
 ]
 SAFE_ENV_SUFFIXES = (".example", ".sample", ".template")
 
@@ -62,8 +62,8 @@ class Finding:
 def normalize_deny(raw: str | None) -> str | None:
     if not raw:
         return None
-    cleaned = raw.strip("\r\n")
-    return cleaned or None
+    parts = [line.strip() for line in raw.splitlines() if line.strip()]
+    return "|".join(parts) if parts else None
 
 
 def rules(deny: str | None) -> list[tuple[str, re.Pattern[str]]]:
@@ -86,11 +86,19 @@ def scan_text(text: str, where: str, active: list[tuple[str, re.Pattern[str]]]) 
     return found
 
 
+def redact_where(where: str, active: list[tuple[str, re.Pattern[str]]]) -> str:
+    safe = where
+    for _, pattern in active:
+        safe = pattern.sub("<redacted>", safe)
+    return safe
+
+
 def scan_path_markers(rel: str, where: str, active: list[tuple[str, re.Pattern[str]]]) -> list[Finding]:
     found = []
+    safe_where = redact_where(where, active)
     for rule, pattern in active:
         if pattern.search(rel):
-            found.append(Finding(f"{where} (path)", rule))
+            found.append(Finding(f"{safe_where} (path)", rule))
     return found
 
 
@@ -124,9 +132,8 @@ def scan_tree(root: Path, active: list[tuple[str, re.Pattern[str]]]) -> list[Fin
         if not path.is_file():
             continue
         data = path.read_bytes()
-        if b"\0" in data[:8192]:
-            continue
-        found.extend(scan_text(data.decode("utf-8", errors="replace"), rel, active))
+        text = data.decode("latin-1") if b"\0" in data[:8192] else data.decode("utf-8", errors="replace")
+        found.extend(scan_text(text, redact_where(rel, active), active))
     return found
 
 
@@ -158,7 +165,12 @@ def scan_history_names(root: Path, rev: list[str], active: list[tuple[str, re.Pa
 
 
 def scan_tags(root: Path, active: list[tuple[str, re.Pattern[str]]]) -> list[Finding]:
-    raw = git_bytes(root, "for-each-ref", "refs/tags", "--format=%(refname:short)%1f%(contents)%00")
+    raw = git_bytes(
+        root,
+        "for-each-ref",
+        "refs/tags",
+        "--format=%(refname:short)%1f%(taggername) %(taggeremail)%0a%(contents)%00",
+    )
     found = []
     for block in raw.split(b"\x00"):
         if not block:
@@ -167,9 +179,10 @@ def scan_tags(root: Path, active: list[tuple[str, re.Pattern[str]]]) -> list[Fin
         if not sep:
             continue
         name = name_b.decode("utf-8", errors="replace").lstrip("\n")
+        safe_name = redact_where(name, active)
         body = body_b.decode("utf-8", errors="replace")
-        found.extend(scan_path_markers(name, f"tag {name}", active))
-        found.extend(scan_text(body, f"tag {name} message", active))
+        found.extend(scan_path_markers(name, f"tag {safe_name}", active))
+        found.extend(scan_text(body, f"tag {safe_name} message", active))
     return found
 
 
@@ -187,6 +200,7 @@ def scan_history(
         "log",
         *rev,
         "-m",
+        "--text",
         "--no-color",
         "--no-ext-diff",
         "--no-renames",

@@ -132,6 +132,10 @@ def tree_digest(src: Path) -> str:
             continue
         if path.suffix in (".pyc", ".pyo", ".pyd"):
             continue
+        if path.is_symlink():
+            h.update(b"L" + rel.as_posix().encode("utf-8") + b"\0")
+            h.update(os.readlink(path).encode("utf-8", errors="surrogateescape") + b"\0")
+            continue
         if path.is_file():
             h.update(rel.as_posix().encode("utf-8") + b"\0")
             h.update(path.read_bytes() + b"\0")
@@ -179,8 +183,8 @@ def is_modified_copy(entry: Path) -> bool:
     try:
         recorded = json.loads(marker.read_text()).get("digest")
     except (OSError, ValueError):
-        return False
-    return bool(recorded) and tree_digest(entry) != recorded
+        return True
+    return not recorded or tree_digest(entry) != recorded
 
 
 def status(entry: Path, name: str, mode: str) -> str:
@@ -199,7 +203,7 @@ def status(entry: Path, name: str, mode: str) -> str:
     recorded = data.get("digest")
     current = tree_digest(entry)
     target = tree_digest(src)
-    if recorded and current != recorded and current != target:
+    if not recorded or (current != recorded and current != target):
         return "modified"
     if data.get("version") != version() or recorded != target or current != target or data.get("skill") != name:
         return "stale"
@@ -259,11 +263,14 @@ def run(argv: list[str] | None = None, environ: dict[str, str] | None = None) ->
         picked = [s.strip() for s in args.only.split(",") if s.strip()]
         if not picked:
             parser.error("--only requires at least one skill")
-        # Uninstall removes only the named skills: other skills may still need their siblings.
-        names = resolve(picked, with_deps=not (args.no_deps or args.uninstall))
-        added = sorted(set(names) - set(picked))
-        if added:
-            print(f"adding dependencies: {', '.join(added)}")
+        # Uninstall removes only the named skills (including ones removed from the repo).
+        if args.uninstall:
+            names = sorted(set(picked))
+        else:
+            names = resolve(picked, with_deps=not args.no_deps)
+            added = sorted(set(names) - set(picked))
+            if added:
+                print(f"adding dependencies: {', '.join(added)}")
     else:
         names = available_skills()
 
@@ -301,7 +308,7 @@ def run(argv: list[str] | None = None, environ: dict[str, str] | None = None) ->
                 continue
             try:
                 target.path.mkdir(parents=True, exist_ok=True)
-            except FileExistsError:
+            except (FileExistsError, NotADirectoryError):
                 print(f"{label}: skills path is not a directory", file=sys.stderr)
                 rc = 1
                 break
