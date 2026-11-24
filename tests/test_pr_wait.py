@@ -33,21 +33,21 @@ def make_watcher(prw, gating_seen=False):
     return watcher
 
 
-def stub_poll_inputs(prw, watcher, monkeypatch):
+def stub_poll_inputs(prw, watcher, monkeypatch, *, merge_state="CLEAN", reviews=None, check_bucket="pass"):
     pr = {
         "state": "OPEN",
         "url": "https://github.com/o/r/pull/7",
         "headRefOid": "a" * 40,
         "baseRefName": "main",
-        "mergeStateStatus": "CLEAN",
+        "mergeStateStatus": merge_state,
         "author": {"login": "me"},
         "viewer": "me",
         "baseRef": {"target": {"oid": "b" * 40}},
         "comments": {"nodes": []},
-        "reviews": {"nodes": []},
+        "reviews": {"nodes": list(reviews or [])},
         "reviewThreads": {"nodes": []},
     }
-    checks = {"ci": {"name": "ci", "bucket": "pass", "link": "https://x/ci", "description": ""}}
+    checks = {"ci": {"name": "ci", "bucket": check_bucket, "link": "https://x/ci", "description": ""}}
     monkeypatch.setattr(watcher, "fetch_pr", lambda: pr)
     monkeypatch.setattr(watcher, "fetch_checks", lambda: checks)
     monkeypatch.setattr(watcher, "behind", lambda *_args: "")
@@ -81,6 +81,25 @@ def test_repeated_timeouts_raise_transient_error(prw, monkeypatch):
     assert prw.GH_TIMEOUT_SECONDS == 120
 
 
+def test_required_checks_reraises_transient_error(prw, monkeypatch):
+    def boom(_args):
+        raise prw.GhError("HTTP 502 Bad Gateway", True)
+
+    monkeypatch.setattr(prw, "gh_lines", boom)
+    with pytest.raises(prw.GhError) as caught:
+        prw.required_checks("o/r", "main")
+    assert caught.value.transient is True
+
+
+@pytest.mark.parametrize("msg", ["HTTP 404 Not Found", "HTTP 403 Forbidden"])
+def test_required_checks_skips_non_transient_errors(prw, monkeypatch, msg):
+    def non_transient(_args):
+        raise prw.GhError(msg, False)
+
+    monkeypatch.setattr(prw, "gh_lines", non_transient)
+    assert prw.required_checks("o/r", "main") == set()
+
+
 # --- patch 07: a failed first baseline must not save empty state -----------
 
 
@@ -100,14 +119,12 @@ def test_failed_baseline_does_not_save_state(prw, monkeypatch):
 
 def test_recorded_baseline_saves_state(prw, monkeypatch):
     watcher = make_watcher(prw)
-
-    def record_then_stop():
-        watcher.recorded = True
-        watcher.finish(0, ["merged"])
-
-    monkeypatch.setattr(watcher, "poll", record_then_stop)
-    with pytest.raises(SystemExit):
-        watcher.run()
+    assert watcher.baseline is True
+    stub_poll_inputs(prw, watcher, monkeypatch, merge_state="DIRTY")
+    with pytest.raises(SystemExit) as caught:
+        watcher.poll()
+    assert caught.value.code == 1
+    assert watcher.recorded is True
     assert watcher.path.exists()
 
 
@@ -127,8 +144,17 @@ def test_ready_finishes_when_no_gating_bot_ever_reviewed(prw, monkeypatch, capsy
 
 
 def test_ready_keeps_waiting_when_gating_bot_was_seen(prw, monkeypatch, capsys):
-    watcher = make_watcher(prw, gating_seen=True)
-    stub_poll_inputs(prw, watcher, monkeypatch)
+    watcher = make_watcher(prw, gating_seen=False)
+    prior_review = {
+        "id": "r1",
+        "author": {"login": "greptile-apps"},
+        "state": "COMMENTED",
+        "commit": {"oid": "0" * 40},
+        "body": "earlier review",
+        "url": "https://github.com/o/r/pull/7#pullrequestreview-1",
+    }
+    stub_poll_inputs(prw, watcher, monkeypatch, reviews=[prior_review])
     watcher.poll()
+    assert watcher.state["gating_seen"] is True
     watcher.poll()  # no SystemExit: still waiting for the bot to review this head
     assert "ready on" not in capsys.readouterr().out

@@ -98,7 +98,9 @@ def test_placeholder_fails():
 
 @pytest.mark.parametrize("label", ["Before", "After"])
 def test_empty_evidence_label_fails(label):
-    body = VALID.replace("test_x failed", "").replace("test_x passed", "") if label == "Before" else VALID.replace("test_x passed", "")
+    other = "After" if label == "Before" else "Before"
+    body = VALID.replace("test_x failed", "") if label == "Before" else VALID.replace("test_x passed", "")
     code, out = lint(body)
     assert code == 1
     assert f"**{label}:**" in out
+    assert f"**{other}:**" not in out
