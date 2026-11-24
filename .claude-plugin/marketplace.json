@@ -1,0 +1,21 @@
+{
+  "name": "jstack",
+  "owner": {
+    "name": "justcarlson"
+  },
+  "description": "Agent skills for shipping real pull requests. Patched tstack plus companions.",
+  "plugins": [
+    {
+      "name": "jstack",
+      "source": "./",
+      "description": "17 agent skills for shipping pull requests: patched t3dotgg/tstack core, the pr body standard, and companions.",
+      "version": "0.1.0",
+      "author": {
+        "name": "justcarlson"
+      },
+      "homepage": "https://github.com/justcarlson/jstack",
+      "license": "MIT",
+      "keywords": ["skills", "tstack", "pull-requests", "code-review", "ci"]
+    }
+  ]
+}

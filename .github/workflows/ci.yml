@@ -1,0 +1,128 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-skills:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Validate skills, manifests and size budget
+        run: python3 scripts/validate_skills.py
+      - name: skills CLI discovers every skill
+        env:
+          NO_COLOR: '1'
+          DISABLE_TELEMETRY: '1'
+          DO_NOT_TRACK: '1'
+        run: |
+          set -euo pipefail
+          npx --yes skills@1.5.22 add "$PWD" --list > "$RUNNER_TEMP/skills-list.txt" 2>&1
+          python3 - "$RUNNER_TEMP/skills-list.txt" <<'PY'
+          import pathlib, re, sys
+
+          listed = set(re.findall(r"(?m)^\S*\s{2,}([a-z0-9][a-z0-9-]*)\s*$", pathlib.Path(sys.argv[1]).read_text()))
+          want = {p.name for p in pathlib.Path("skills").iterdir() if (p / "SKILL.md").is_file()}
+          missing = sorted(want - listed)
+          if missing or len(want) != 17:
+              print(f"::error::skills CLI listed {len(want & listed)}/{len(want)}; missing: {', '.join(missing) or 'none'}")
+              sys.exit(1)
+          print(f"skills CLI lists all {len(want)} skills")
+          PY
+
+  privacy-and-secrets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned gitleaks
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl --fail --silent --show-error --location \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            --output "$archive"
+          printf '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  %s\n' "$archive" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/bin" gitleaks
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: gitleaks (all history)
+        run: gitleaks git --no-banner --redact --verbose .
+      - name: Private markers (tree and all history)
+        env:
+          PRIVATE_DENY_REGEX: ${{ secrets.PRIVATE_DENY_REGEX }}
+        run: python3 scripts/check_privacy.py --all
+
+  lint-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: shellcheck@0.11.0
+      - name: Install pinned actionlint
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          curl --fail --silent --show-error --location \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$archive"
+          printf '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  %s\n' "$archive" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/bin" actionlint
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: false
+      - name: shellcheck
+        run: shellcheck install.sh skills/omarchy-dev/scripts/omarchy-vm
+      - name: actionlint
+        run: actionlint -config-file .github/actionlint.yaml .github/workflows/*.yml skills/omarchy-dev/templates/omarchy-vm.yml
+      - name: ruff
+        run: uvx ruff@0.17.3 check --isolated scripts tests
+      - name: pytest
+        run: uv run --no-project --with pytest==9.0.1 --with pyyaml==6.0.3 pytest -q tests/
+
+  ci-ok:
+    if: always()
+    needs: [validate-skills, privacy-and-secrets, lint-and-test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Every required job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+
+          needs = json.loads(os.environ["NEEDS"])
+          bad = {name: job["result"] for name, job in needs.items() if job["result"] != "success"}
+          for name, result in bad.items():
+              print(f"::error::{name} finished with {result}")
+          if len(needs) != 3:
+              print(f"::error::expected 3 needed jobs, got {len(needs)}")
+          sys.exit(1 if bad or len(needs) != 3 else 0)
+          PY

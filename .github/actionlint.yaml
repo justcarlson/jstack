@@ -1,0 +1,4 @@
+self-hosted-runner:
+  # ubuntu-26.04 is GitHub-hosted but newer than this actionlint's label list.
+  # skills/omarchy-dev/templates/omarchy-vm.yml runs on it, as omacom/omarchy CI does.
+  labels: [ubuntu-26.04]
