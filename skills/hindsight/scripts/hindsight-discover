@@ -2,24 +2,37 @@
 """Inventory local agent-harness logs for the hindsight skill.
 
 Read-only. Reads file names and modification times, and counts rows in
-OpenCode's SQLite database. It never opens transcript files, so prompt text,
-message contents and secrets cannot reach its output.
+OpenCode's SQLite database. Inventory never opens transcript files, so prompt
+text, message contents and secrets cannot reach its output.
 
-Exit codes: 0 ok, 1 --check found a problem, 2 usage or config error.
+Google Workspace AI Tools Addendum (sections 2b, 2c, 2f):
+- Lookback is at most 30 days (--lookback-days, default 30). Older files and
+  rows are not counted and not readable through this script.
+- Paths that name a Workspace tool are skipped.
+- --filter-jsonl FILE is the only mode that reads a transcript. It prints the
+  file only if the whole session is clean and in window. A session with any
+  Workspace tool call, output or name is dropped whole, and nothing is printed.
+
+Exit codes: 0 ok, 1 --check found a problem, 2 usage or config error,
+3 --filter-jsonl dropped a Workspace-tainted session, 4 --filter-jsonl dropped a
+session outside the lookback window.
 """
 from __future__ import annotations
 
 import argparse
 import fnmatch
 import glob
+import gzip
 import json
 import math
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,6 +69,20 @@ PATTERNS = {
 OPENCODE_DB = ".local/share/opencode/opencode.db"
 OPENCODE_TABLES = ("session_v2", "session")
 
+# Workspace AI Tools Addendum 2b/2c/2f: never mine Workspace data, keep <= 30 days.
+MAX_LOOKBACK_DAYS = 30
+DAY_SECONDS = 86400
+# Case-insensitive. Matches gmail, google-* (and google_*) tool or server names,
+# *mcp.googleapis.com hosts, carlsonhouse_{gmail,calendar,drive,docs}* tools and
+# gwscli. Broad on purpose: a false drop costs one session, a miss breaks the
+# addendum.
+WORKSPACE_RE = re.compile(
+    r"gmail|google[-_]|mcp\.googleapis\.com|carlsonhouse[-_](?:gmail|calendar|drive|docs)|gwscli",
+    re.IGNORECASE,
+)
+EXIT_TAINTED = 3
+EXIT_OUT_OF_WINDOW = 4
+
 
 def iso(ts: float | None) -> str | None:
     if ts is None or isinstance(ts, bool) or not math.isfinite(ts):
@@ -89,11 +116,57 @@ def excluded(path: str, excludes: list[str]) -> bool:
     return any(fnmatch.fnmatch(path, pat) for pat in excludes)
 
 
-def find_files(home: Path, pattern: str, excludes: list[str], *, include_hidden: bool = False) -> list[str]:
+def workspace_tainted(value: object) -> bool:
+    """True if any string, key or nested value names a Google Workspace tool."""
+    if isinstance(value, str):
+        return WORKSPACE_RE.search(value) is not None
+    if isinstance(value, dict):
+        return any(workspace_tainted(k) or workspace_tainted(v) for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        return any(workspace_tainted(v) for v in value)
+    return False
+
+
+def line_tainted(line: str) -> bool:
+    """Check one JSONL line raw, and again after JSON decoding (escapes)."""
+    if WORKSPACE_RE.search(line):
+        return True
+    try:
+        return workspace_tainted(json.loads(line))
+    except ValueError:
+        return False
+
+
+def cutoff_for(now: float, lookback_days: float) -> float:
+    return now - min(lookback_days, MAX_LOOKBACK_DAYS) * DAY_SECONDS
+
+
+def in_window(mtime: float, cutoff: float, now: float) -> bool:
+    return cutoff <= mtime <= now + DAY_SECONDS
+
+
+def find_files(
+    home: Path,
+    pattern: str,
+    excludes: list[str],
+    *,
+    include_hidden: bool = False,
+    window: tuple[float, float] | None = None,
+) -> list[str]:
     found = set()
     for p in glob.glob(expand(home, pattern), recursive=True, include_hidden=include_hidden):
-        if os.path.isfile(p) and not excluded(p, excludes):
-            found.add(os.path.realpath(p))
+        if not os.path.isfile(p) or excluded(p, excludes):
+            continue
+        rel = tilde(home, p)
+        if WORKSPACE_RE.search(rel):
+            continue
+        if window is not None:
+            try:
+                if not in_window(os.stat(p).st_mtime, window[0], window[1]):
+                    continue
+            except OSError:
+                continue
+        found.add(os.path.realpath(p))
     return sorted(found)
 
 
@@ -107,11 +180,13 @@ def span(paths: list[str]) -> tuple[float | None, float | None]:
     return (min(times), max(times)) if times else (None, None)
 
 
-def scan_files(home: Path, name: str, excludes: list[str]) -> dict:
+def scan_files(home: Path, name: str, excludes: list[str], window: tuple[float, float] | None = None) -> dict:
     kinds: dict[str, list[str]] = {}
     for kind, pattern in PATTERNS[name]:
         hidden = name == "antigravity" and "**" in pattern
-        kinds.setdefault(kind, []).extend(find_files(home, pattern, excludes, include_hidden=hidden))
+        kinds.setdefault(kind, []).extend(
+            find_files(home, pattern, excludes, include_hidden=hidden, window=window)
+        )
     allfiles = sorted({p for v in kinds.values() for p in v})
     lo, hi = span(allfiles)
     info: dict = {
@@ -140,7 +215,7 @@ def to_seconds(value: object) -> float | None:
     return sec if iso(sec) is not None else None
 
 
-def scan_opencode(home: Path) -> dict:
+def scan_opencode(home: Path, window: tuple[float, float] | None = None) -> dict:
     db = os.path.join(str(home), OPENCODE_DB)
     info: dict = {
         "found": False,
@@ -166,18 +241,21 @@ def scan_opencode(home: Path) -> dict:
                 continue
             cols = {r[1] for r in con.execute(f"pragma table_info({table})")}
             if "time_created" in cols:
-                n, lo, hi = con.execute(
-                    f"select count(*), min(time_created), max(time_created) from {table}"
-                ).fetchone()
+                stamps = [to_seconds(r[0]) for r in con.execute(f"select time_created from {table}")]
             else:
-                n, lo, hi = con.execute(f"select count(*), null, null from {table}").fetchone()
-            lo_s = to_seconds(lo) if lo is not None else None
-            hi_s = to_seconds(hi) if hi is not None else None
+                stamps = []
+            total = len(stamps) if stamps else con.execute(f"select count(*) from {table}").fetchone()[0]
+            # A row with no readable date cannot be shown to sit in the window,
+            # so it is not counted.
+            dated = [t for t in stamps if t is not None and (window is None or in_window(t, window[0], window[1]))]
+            lo_s, hi_s = (min(dated), max(dated)) if dated else (None, None)
+            n = len(dated)
             info.update(
                 readable=True,
                 table=table,
                 sessions=n,
                 session_files=n,
+                excluded_out_of_window_or_undated=total - n,
                 earliest_utc=iso(lo_s),
                 latest_utc=iso(hi_s),
                 _mtimes=(lo_s, hi_s),
@@ -268,13 +346,17 @@ def discover(args: argparse.Namespace, home: Path, cfg: dict | None, cfg_path: P
     cfg_view = cfg or {}
     custom, excludes, _ = config_lists(cfg_view)
     excludes = list(excludes) + list(args.exclude or [])
+    now = args.now if args.now is not None else time.time()
+    window = (cutoff_for(now, args.lookback_days), now)
     harnesses: dict = {}
     disabled: list[str] = []
     for name in HARNESSES:
         if not harness_enabled(cfg, name):
             disabled.append(name)
             continue
-        harnesses[name] = scan_opencode(home) if name == "opencode" else scan_files(home, name, excludes)
+        harnesses[name] = (
+            scan_opencode(home, window) if name == "opencode" else scan_files(home, name, excludes, window)
+        )
 
     custom_all = dict(custom)
     for item in args.extra_glob or []:
@@ -283,7 +365,7 @@ def discover(args: argparse.Namespace, home: Path, cfg: dict | None, cfg_path: P
             custom_all[key] = pat
     custom_out: dict = {}
     for key, pat in sorted(custom_all.items()):
-        files = find_files(home, pat, excludes)
+        files = find_files(home, pat, excludes, window=window)
         lo, hi = span(files)
         custom_out[key] = {
             "glob": tilde(home, expand(home, pat)),
@@ -320,6 +402,9 @@ def discover(args: argparse.Namespace, home: Path, cfg: dict | None, cfg_path: P
             "earliest_utc": iso(min(stamps)) if stamps else None,
             "latest_utc": iso(max(stamps)) if stamps else None,
             "config_exists": cfg_path.exists(),
+            "lookback_days": min(args.lookback_days, MAX_LOOKBACK_DAYS),
+            "window_start_utc": iso(window[0]),
+            "workspace_tainted_paths_skipped": True,
         },
         "harnesses": harnesses,
         "custom_globs": custom_out,
@@ -327,7 +412,8 @@ def discover(args: argparse.Namespace, home: Path, cfg: dict | None, cfg_path: P
         "t3_code": {"userdata_detected": (home / ".t3" / "userdata").is_dir()},
         "configured_overlays": overlays,
         "config_path": tilde(home, str(cfg_path)),
-        "note": "Missing or uncovered sources are gaps, not zero incidents.",
+        "note": "Missing or uncovered sources are gaps, not zero incidents. "
+        "Files older than the lookback window and Workspace-named paths are not counted.",
     }
     if cfg_error:
         result["config_error"] = cfg_error
@@ -428,6 +514,7 @@ def human(result: dict, check: dict | None, wrote: str | None) -> str:
     cov = result["coverage"]
     lines = ["Hindsight coverage"]
     lines.append(f"  config: {result['config_path']} ({'found' if cov['config_exists'] else 'absent'})")
+    lines.append(f"  window: last {cov['lookback_days']} days (from {cov['window_start_utc']}); Workspace-named paths skipped")
     for name, v in result["harnesses"].items():
         if v["found"] and v.get("readable", True):
             extra = ""
@@ -466,6 +553,44 @@ def human(result: dict, check: dict | None, wrote: str | None) -> str:
     return "\n".join(lines)
 
 
+def lookback_days(text: str) -> float:
+    try:
+        num = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {text!r}") from None
+    if not math.isfinite(num) or num <= 0 or num > MAX_LOOKBACK_DAYS:
+        raise argparse.ArgumentTypeError(f"must be above 0 and at most {MAX_LOOKBACK_DAYS} days")
+    return num
+
+
+def filter_jsonl(path: Path, now: float, lookback: float, out) -> int:
+    """Print a clean in-window session. Drop a tainted or old one whole."""
+    if WORKSPACE_RE.search(str(path)):
+        print("dropped: Workspace-named path", file=sys.stderr)
+        return EXIT_TAINTED
+    try:
+        mtime = path.stat().st_mtime
+    except OSError as exc:
+        print(f"cannot read: {type(exc).__name__}", file=sys.stderr)
+        return 2
+    if not in_window(mtime, cutoff_for(now, lookback), now):
+        print("dropped: outside lookback window", file=sys.stderr)
+        return EXIT_OUT_OF_WINDOW
+    opener = gzip.open if path.suffix == ".gz" else open
+    try:
+        with opener(path, "rt", encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except (OSError, EOFError) as exc:
+        print(f"cannot read: {type(exc).__name__}", file=sys.stderr)
+        return 2
+    if any(line_tainted(line) for line in lines):
+        print("dropped: Workspace-tainted session", file=sys.stderr)
+        return EXIT_TAINTED
+    for line in lines:
+        print(line, file=out)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="hindsight-discover",
@@ -483,6 +608,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--repo", metavar="DIR", help="git repo to test with gh")
     p.add_argument("--no-gh", action="store_true", help="skip the gh check")
     p.add_argument("--human", action="store_true", help="print a short readable summary")
+    p.add_argument(
+        "--lookback-days",
+        type=lookback_days,
+        default=MAX_LOOKBACK_DAYS,
+        metavar="N",
+        help=f"only count sessions from the last N days (1 to {MAX_LOOKBACK_DAYS}, default {MAX_LOOKBACK_DAYS})",
+    )
+    p.add_argument("--now", type=float, help=argparse.SUPPRESS)  # epoch seconds, for tests
+    p.add_argument(
+        "--filter-jsonl",
+        metavar="FILE",
+        help="print FILE only if the session is in window and free of Workspace tools; "
+        "exit 3 if tainted, 4 if out of window, and print nothing",
+    )
     return p
 
 
@@ -493,6 +632,9 @@ def main(argv: list[str] | None = None) -> int:
         if not sep or not key or not pat:
             print(f"--extra-glob needs NAME=GLOB, got: {item!r}", file=sys.stderr)
             return 2
+    now = args.now if args.now is not None else time.time()
+    if args.filter_jsonl:
+        return filter_jsonl(Path(args.filter_jsonl).expanduser(), now, args.lookback_days, sys.stdout)
     home = Path(args.home).expanduser() if args.home else Path.home()
     if args.config:
         cfg_path = Path(args.config).expanduser()

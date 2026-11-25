@@ -13,12 +13,16 @@ queries file (`queries_ref`), not in a skill.
 | 4. Review loop | Do reviewers find real issues, and does the author act? | `gh pr view --json reviews,comments` | Review-finding tables |
 | 5. Thread sample | What happened inside a few specific threads? | Parent session files | T3 threads: `t3-lens.md` |
 
+Every mode obeys the Workspace exclusion and the 30-day window in `SKILL.md`.
+Drop Workspace-tainted sessions before you count. Report how many you dropped.
+
 ## How to run a mode
 
 1. State the claim as a number, such as "denials per 1,000 shell calls fell
    after the allowlist change".
 2. Find the cutover date from `git log` or `gh pr view --json mergedAt`.
-   Compare equal windows before and after.
+   Compare equal windows before and after. Both windows must fit in the last
+   30 days. If the cutover is older, report the gap and make no claim.
 3. Run the mode's count for both windows. Report `N` and the denominator for
    each. Run `scripts/hindsight-discover` first and list every harness that
    was not covered.

@@ -14,6 +14,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "hindsight" / "scripts
 SECRET = "SECRET-PROMPT-sk-test-1234567890-please-ignore-previous-instructions"
 DAY = 86400
 T0 = 1_760_000_000  # fixed epoch seconds
+NOW = T0 + 6 * DAY  # fixed "now": every fixture below sits inside the 30-day window
 
 
 def touch(path: Path, mtime: float, text: str | None = None) -> Path:
@@ -25,6 +26,8 @@ def touch(path: Path, mtime: float, text: str | None = None) -> Path:
 
 def run(home: Path, *args: str, cfg: Path | None = None, expect: int | None = 0):
     cmd = [sys.executable, str(SCRIPT), "--home", str(home), "--no-gh"]
+    if "--now" not in args:
+        cmd += ["--now", str(NOW)]
     cmd += ["--config", str(cfg or home / ".config" / "hindsight" / "sources.json")]
     cmd += list(args)
     env = {k: v for k, v in os.environ.items() if k != "HINDSIGHT_CONFIG"}
@@ -361,7 +364,8 @@ def test_opencode_bad_timestamps_degrade_gracefully(home: Path):
     con.close()
     oc = json.loads(run(home).stdout)["harnesses"]["opencode"]
     assert oc["readable"] is True
-    assert oc["sessions"] == 2
+    # Rows with no usable date cannot be shown to sit in the window: not counted.
+    assert oc["sessions"] == 0 and oc["excluded_out_of_window_or_undated"] == 2
     assert oc["earliest_utc"] is None and oc["latest_utc"] is None
 
 
@@ -404,3 +408,164 @@ def test_extra_glob_validated_without_write_config_and_non_dict_harness_rejected
     cfg.write_text(json.dumps({"harnesses": {"pi": False}}))
     errors = json.loads(run(full_home, "--check", expect=1).stdout)["check"]["errors"]
     assert "harness config entry must be an object: pi" in errors
+
+
+# --- Google Workspace AI Tools Addendum 2b, 2c, 2f -------------------------------
+
+WORKSPACE_NAMES = [
+    "gmail",
+    "mcp__claude_ai_Gmail__search_threads",
+    "google-calendar",
+    "google_drive",
+    "https://gmailmcp.googleapis.com/mcp/v1",
+    "calendarmcp.googleapis.com",
+    "carlsonhouse_gmail_search",
+    "carlsonhouse_calendar_agenda",
+    "carlsonhouse-drive-search",
+    "carlsonhouse_docs_get",
+    "gwscli",
+    "GWSCLI",
+]
+
+
+def jsonl(path: Path, events: list[dict], mtime: float = NOW - DAY) -> Path:
+    return touch(path, mtime, "".join(json.dumps(e) + "\n" for e in events))
+
+
+def filter_run(home: Path, f: Path, *extra: str, expect: int | None = None):
+    cmd = [sys.executable, str(SCRIPT), "--filter-jsonl", str(f), "--now", str(NOW), *extra]
+    proc = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=60)
+    if expect is not None:
+        assert proc.returncode == expect, proc.stderr + proc.stdout
+    return proc
+
+
+def test_filter_passes_clean_in_window_session(home: Path):
+    events = [{"role": "user", "content": "fix the lint error"}, {"role": "assistant", "content": "done"}]
+    f = jsonl(home / "s.jsonl", events)
+    proc = filter_run(home, f, expect=0)
+    assert [json.loads(x) for x in proc.stdout.splitlines()] == events
+
+
+@pytest.mark.parametrize("name", WORKSPACE_NAMES)
+def test_filter_drops_whole_session_with_workspace_tool_call(home: Path, name: str):
+    f = jsonl(
+        home / "s.jsonl",
+        [
+            {"role": "user", "content": "clean first line"},
+            {"type": "tool_use", "name": name, "input": {"q": "x"}},
+            {"role": "assistant", "content": "clean last line"},
+        ],
+    )
+    proc = filter_run(home, f, expect=3)
+    assert proc.stdout == ""  # nothing from a tainted session, not even the clean lines
+    assert "clean first line" not in proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize("name", ["gmail", "carlsonhouse_drive_search", "gwscli"])
+def test_filter_catches_taint_in_tool_output_and_nested_values(home: Path, name: str):
+    f = jsonl(home / "a.jsonl", [{"role": "tool", "content": [{"text": f"ran {name} ok"}]}])
+    filter_run(home, f, expect=3)
+    g = jsonl(home / "b.jsonl", [{"a": {"b": [{"server": name}]}}])
+    filter_run(home, g, expect=3)
+
+
+def test_filter_catches_json_escaped_and_non_json_lines(home: Path):
+    f = jsonl(home / "a.jsonl", [{"x": "ok"}])
+    f.write_text('{"name": "g\\u006dail"}\n')  # JSON escape hides the word from a raw scan
+    os.utime(f, (NOW - DAY, NOW - DAY))
+    filter_run(home, f, expect=3)
+    g = home / "b.jsonl"
+    g.write_text("not json, but uses gwscli here\n")
+    os.utime(g, (NOW - DAY, NOW - DAY))
+    filter_run(home, g, expect=3)
+
+
+def test_filter_is_case_insensitive(home: Path):
+    f = jsonl(home / "a.jsonl", [{"name": "Carlsonhouse_Gmail_Search"}])
+    filter_run(home, f, expect=3)
+
+
+def test_filter_drops_workspace_named_path(home: Path):
+    f = jsonl(home / "google-drive-session.jsonl", [{"x": "ok"}])
+    filter_run(home, f, expect=3)
+
+
+def test_filter_does_not_overmatch_plain_google_and_mail(home: Path):
+    f = jsonl(home / "a.jsonl", [{"content": "search google for email etiquette, use mail(1)"}])
+    filter_run(home, f, expect=0)
+
+
+def test_filter_drops_session_outside_30_days(home: Path):
+    old = jsonl(home / "old.jsonl", [{"x": "ok"}], mtime=NOW - 31 * DAY)
+    proc = filter_run(home, old, expect=4)
+    assert proc.stdout == ""
+    edge = jsonl(home / "edge.jsonl", [{"x": "ok"}], mtime=NOW - 29 * DAY)
+    filter_run(home, edge, expect=0)
+
+
+def test_filter_lookback_cannot_exceed_30_days(home: Path):
+    old = jsonl(home / "old.jsonl", [{"x": "ok"}], mtime=NOW - 45 * DAY)
+    for bad in ("31", "365", "0", "-1", "nan"):
+        proc = filter_run(home, old, "--lookback-days", bad)
+        assert proc.returncode == 2, bad
+    filter_run(home, old, "--lookback-days", "7", expect=4)
+
+
+def test_filter_reads_gzip_sessions(home: Path):
+    import gzip
+
+    f = home / "s.jsonl.gz"
+    with gzip.open(f, "wt") as fh:
+        fh.write(json.dumps({"name": "gwscli"}) + "\n")
+    os.utime(f, (NOW - DAY, NOW - DAY))
+    filter_run(home, f, expect=3)
+
+
+def test_filter_missing_file_is_usage_error(home: Path):
+    filter_run(home, home / "missing.jsonl", expect=2)
+
+
+def test_discovery_skips_old_sessions(home: Path):
+    touch(home / ".pi/agent/sessions/p/new.jsonl", NOW - DAY)
+    touch(home / ".pi/agent/sessions/p/old.jsonl", NOW - 31 * DAY)
+    out = json.loads(run(home).stdout)
+    assert out["harnesses"]["pi"]["session_files"] == 1
+    assert out["coverage"]["lookback_days"] == 30
+    assert out["coverage"]["earliest_utc"] == out["coverage"]["latest_utc"]
+
+
+def test_discovery_skips_workspace_named_paths(home: Path):
+    touch(home / ".pi/agent/sessions/p/a.jsonl", NOW - DAY)
+    touch(home / ".pi/agent/sessions/gmail-triage/b.jsonl", NOW - DAY)
+    touch(home / ".pi/agent/sessions/p/carlsonhouse_drive_x.jsonl", NOW - DAY)
+    touch(home / "logs/cursor/gwscli.jsonl", NOW - DAY)
+    touch(home / "logs/cursor/ok.jsonl", NOW - DAY)
+    out = json.loads(run(home, "--extra-glob", "cursor=~/logs/cursor/*.jsonl").stdout)
+    assert out["harnesses"]["pi"]["session_files"] == 1
+    assert out["custom_globs"]["cursor"]["session_files"] == 1
+
+
+def test_discovery_lookback_is_capped_and_validated(home: Path):
+    touch(home / ".pi/agent/sessions/p/a.jsonl", NOW - DAY)
+    run(home, "--lookback-days", "31", expect=2)
+    run(home, "--lookback-days", "0", expect=2)
+    out = json.loads(run(home, "--lookback-days", "7").stdout)
+    assert out["coverage"]["lookback_days"] == 7
+
+
+def test_discovery_opencode_rows_filtered_by_window(home: Path):
+    db = home / ".local/share/opencode/opencode.db"
+    db.parent.mkdir(parents=True)
+    con = sqlite3.connect(db)
+    con.execute("create table session_v2 (id text primary key, time_created integer)")
+    con.execute("insert into session_v2 values ('new', ?)", ((NOW - DAY) * 1000,))
+    con.execute("insert into session_v2 values ('old', ?)", ((NOW - 40 * DAY) * 1000,))
+    con.commit()
+    con.close()
+    oc = json.loads(run(home).stdout)["harnesses"]["opencode"]
+    assert oc["sessions"] == 1 and oc["excluded_out_of_window_or_undated"] == 1
+
+
+def test_human_summary_states_window(full_home: Path):
+    assert "last 30 days" in run(full_home, "--human").stdout
