@@ -159,7 +159,7 @@ def test_manifest_version_mismatch(repo: Path):
 
 
 def test_manifests_share_version():
-    assert set(vs.manifest_versions(ROOT).values()) == {"0.1.0"}
+    assert set(vs.manifest_versions(ROOT).values()) == {"0.2.0"}
 
 
 def test_pr_body_workflow_must_match(repo: Path):

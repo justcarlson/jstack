@@ -97,5 +97,7 @@ The maintainer fix #37392 sets the bar for a PR we send upstream:
 - `gh` may be logged out inside an offline sandbox.
 - Outside a sandbox, `$TMPDIR` can point somewhere else. Use absolute paths
   for files that `gh` must read.
-- Starting a real thread to test a workaround creates a thread and a
-  worktree. Archive the thread when you are done.
+- Starting a real thread to test a workaround creates a separate thread and
+  worktree. Once its test turn finishes, archive that test thread by its
+  `threadId` (`t3_thread_organize`, `action: "archive"`). Never archive your
+  own thread.
