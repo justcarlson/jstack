@@ -81,14 +81,11 @@ Once confirmed:
 1. The parent thread acts as **pure orchestrator**: launch waves, track worker
    state, resolve blockers, and own merge order. Keep direct feature edits out
    of the coordinator checkout during parallel fan-out.
-2. When `ship epic` starts, read this thread's own id with `t3_thread_read`
-   (or check `t3_thread_list` if unknown) to see whether it is already pinned.
-   If it is not, pin it with `t3_thread_organize` (`action: "pin"`, omitting
-   `threadId`) so T3 does not auto-settle it while waves, post-merge checks, or
-   delegates are still running. Follow T3's PR linking and watching rules for
-   any PR the orchestrator creates, takes over, pushes to, or watches for
-   merge; do not link unrelated worker PRs that a standalone `t3_thread_launch`
-   thread owns and watches itself.
+2. When `ship epic` starts, check `t3_thread_list` (`currentThreadId`,
+   `pinned`). If unpinned, pin it (`t3_thread_organize`, `action: "pin"`, no
+   `threadId`) so no T3 sweep settles it between waves or post-merge proof.
+   Follow T3's PR linking and watching rules for PRs the orchestrator owns; do
+   not link PRs a `t3_thread_launch` worker owns.
 3. Run each non-overlapping issue in its own isolated worktree (using
    `delegate_task` with `isolation: "worktree"`, or `t3_thread_launch` per
    `t3-launch-worktrees` when top-level issue threads are requested). Use the
@@ -134,9 +131,11 @@ Once confirmed:
 1. Update the original **plan in place** with shipped status, PR links,
    production deploy URLs, live proof, decisions made, and any remaining manual
    step for the user.
-2. If the epic added the pin in Stage 4, unpin this thread with
-   `t3_thread_organize` (`action: "unpin"`) once the epic ends (Stage 6
-   completion, a hard blocker stop, or user abort).
+2. On clean Stage 6 completion with no open PRs or user steps left, if Stage 4
+   added the pin (keep any user pin), settle this thread last
+   (`t3_thread_organize`, `action: "settle"`, no `threadId`; it also unpins).
+   On a blocker, abort, or user step, do not settle; `unpin` only if Stage 4
+   added the pin.
 3. Send a brief, scannable report: lead with any blocker, link the updated
    plan and key PRs or deploys, confirm zero open PRs or issues remain (or
    list what stayed open and why), and end with one or two plain sentences on
@@ -146,11 +145,11 @@ Once confirmed:
 
 - Do not treat `full send` as the epic confirmation trigger; `full-send` belongs
   to each deliverable PR.
-- Do not run `ship epic` unpinned: T3's settle-on-merge sweep (once linked PRs
-  merge or close) and inactivity sweep auto-settle an unpinned thread, clearing
-  watches and cutting off post-merge proof or later waves (MCP does not yet
-  expose T3's per-thread auto-settle toggle, so pinning is the guard). On any
-  early stop or abort, unpin if the epic added the pin.
+- Do not run `ship epic` unpinned: T3's merge, close, and inactivity sweeps
+  settle unpinned threads (closed PRs settle even with
+  `sidebarAutoSettleOnMerge: false`), clearing watches and cutting off waves.
+- Settle only this thread (no `threadId`). Settling another thread acts at once,
+  even mid-run, clearing its pin, watches, and pending questions.
 - Do not merge overlapping PRs together; serialize merges across shared files
   and live deployments to preserve zero downtime.
 - Do not stop at "PR opened" while CI, deploys, or later waves are still active.

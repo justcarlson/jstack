@@ -56,11 +56,12 @@ one appears.
 7. **Report** in your final message: the PR link, the merge commit, your proof,
    and each decision you made for the user.
 
-Stay active from step 1 to step 7. If you end your turn while checks or bots are
-pending, the work stops, because nobody will prompt you again. Wait with the
-watcher from `babysit-pr`, so something wakes you when the PR changes. In T3
-Code that is `watch_pull_request`. If you stop before the merge, call
-`unwatch_pull_request` first.
+Stay active from step 1 to step 7. Ending a turn without a watcher stops the
+work. Wait with the watcher from `babysit-pr` (`watch_pull_request` in T3 Code).
+In T3 Code, once every owned PR merges with no open PR, blocker, question, or
+user pin left, settle this thread last (`t3_thread_organize`, `action: "settle"`,
+no `threadId`). Delegated children never settle. Before merge, call
+`unwatch_pull_request` and stay active.
 
 ## Proof
 
@@ -107,8 +108,7 @@ it is waiting: `AskUserQuestion` in Claude Code, `request_user_input` in Codex,
 or the question tool your harness has. Put all the context in the question:
 the PR link, what blocks you, and the options with your recommendation first.
 
-The user said "full send" because they do not want to be stopped. Every
-question breaks that. Ask only for these 4 cases, and nothing else:
+Every question breaks a full send. Ask only for these 4 cases:
 
 1. Deleting data that cannot be regenerated. (Build output, caches and
    targets can be regenerated: delete them yourself.)
@@ -130,10 +130,8 @@ Everything else has a default. Do it, and list it in the report:
 - Finding outside this change: make it the next PR, not a question.
 - One path is broken and another works: use the one that works.
 
-Before you call the question tool, check: is it one of the 4 cases? If not,
-do not call it. Never send the same question twice. When one of the 4 cases
-comes up, ask early, all at once in one question, and keep working on
-everything else while you wait.
+Never call the question tool outside those 4 cases or send the same question
+twice. Ask early, all at once in one question, and keep working while you wait.
 
 If no question tool is available, or the tool returns no answer, take the safe
 path: leave the PR open and unmerged, and start your final message with the

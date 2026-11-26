@@ -15,3 +15,4 @@
 2. When `t3dotgg/tstack` merges an upstream PR that a patch carries, drop the corresponding file from `patches/`, bump the pinned SHA above, and verify all skill tests and CI checks pass.
 3. Preserve `Co-authored-by:` commit trailers and [NOTICE.md](NOTICE.md) rows for every redistributed community contribution.
 4. Keep personal model rosters, fleet hostnames, and private URLs out of `skills/`; users put those in `AGENTS.md`, `CLAUDE.md`, or `~/.config/hindsight/sources.json`.
+5. Local `jstack` patches with no upstream PR stay in `patches/` until upstream adopts equivalent behavior.
