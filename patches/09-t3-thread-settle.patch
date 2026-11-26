@@ -1,11 +1,11 @@
-Local jstack patch: T3 thread settle rules for full-send and full-stop.
-Applies on top of 01..08; no upstream PR.
+Add explicit T3 Code thread-settle rules to full-send and full-stop
+(local jstack patch, applies on top of patches/01..08; no upstream PR).
 
-diff --git a/skills/full-send/SKILL.md b/skills/full-send/SKILL.md
-index cfee388..c31d454 100644
---- a/skills/full-send/SKILL.md
-+++ b/skills/full-send/SKILL.md
-@@ -56,11 +56,12 @@ one appears.
+diff --git c/skills/full-send/SKILL.md w/skills/full-send/SKILL.md
+index cfee388..341d102 100644
+--- c/skills/full-send/SKILL.md
++++ w/skills/full-send/SKILL.md
+@@ -56,11 +56,13 @@ one appears.
  7. **Report** in your final message: the PR link, the merge commit, your proof,
     and each decision you made for the user.
  
@@ -17,13 +17,14 @@ index cfee388..c31d454 100644
 +Stay active from step 1 to step 7. Ending a turn without a watcher stops the
 +work. Wait with the watcher from `babysit-pr` (`watch_pull_request` in T3 Code).
 +In T3 Code, once every owned PR merges with no open PR, blocker, question, or
-+user pin left, settle this thread last (`t3_thread_organize`, `action: "settle"`,
-+no `threadId`). Delegated children never settle. Before merge, call
-+`unwatch_pull_request` and stay active.
++user pin left (check `t3_thread_list` for `pinned`), settle this thread last
++(`t3_thread_organize`, `action: "settle"`, no `threadId`). Delegated children
++never settle. If you stop before merge, call `unwatch_pull_request` and do not
++settle.
  
  ## Proof
  
-@@ -107,8 +108,7 @@ it is waiting: `AskUserQuestion` in Claude Code, `request_user_input` in Codex,
+@@ -107,8 +109,7 @@ it is waiting: `AskUserQuestion` in Claude Code, `request_user_input` in Codex,
  or the question tool your harness has. Put all the context in the question:
  the PR link, what blocks you, and the options with your recommendation first.
  
@@ -33,7 +34,7 @@ index cfee388..c31d454 100644
  
  1. Deleting data that cannot be regenerated. (Build output, caches and
     targets can be regenerated: delete them yourself.)
-@@ -130,10 +130,8 @@ Everything else has a default. Do it, and list it in the report:
+@@ -130,10 +131,8 @@ Everything else has a default. Do it, and list it in the report:
  - Finding outside this change: make it the next PR, not a question.
  - One path is broken and another works: use the one that works.
  
@@ -46,10 +47,10 @@ index cfee388..c31d454 100644
  
  If no question tool is available, or the tool returns no answer, take the safe
  path: leave the PR open and unmerged, and start your final message with the
-diff --git a/skills/full-stop/SKILL.md b/skills/full-stop/SKILL.md
+diff --git c/skills/full-stop/SKILL.md w/skills/full-stop/SKILL.md
 index 9ea7737..20ce309 100644
---- a/skills/full-stop/SKILL.md
-+++ b/skills/full-stop/SKILL.md
+--- c/skills/full-stop/SKILL.md
++++ w/skills/full-stop/SKILL.md
 @@ -42,6 +42,7 @@ without the user. If someone else merged it, report that instead.
  - **Blocked:** explain what prevents readiness, what you tried, and what is
    needed. Follow full-send's rules for asking the user.

@@ -59,9 +59,10 @@ one appears.
 Stay active from step 1 to step 7. Ending a turn without a watcher stops the
 work. Wait with the watcher from `babysit-pr` (`watch_pull_request` in T3 Code).
 In T3 Code, once every owned PR merges with no open PR, blocker, question, or
-user pin left, settle this thread last (`t3_thread_organize`, `action: "settle"`,
-no `threadId`). Delegated children never settle. Before merge, call
-`unwatch_pull_request` and stay active.
+user pin left (check `t3_thread_list` for `pinned`), settle this thread last
+(`t3_thread_organize`, `action: "settle"`, no `threadId`). Delegated children
+never settle. If you stop before merge, call `unwatch_pull_request` and do not
+settle.
 
 ## Proof
 
