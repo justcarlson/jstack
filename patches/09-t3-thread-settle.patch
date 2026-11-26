@@ -1,6 +1,20 @@
-Add explicit T3 Code thread-settle rules to full-send and full-stop
+Add explicit T3 Code thread-settle rules to babysit-pr, full-send, and full-stop
 (local jstack patch, applies on top of patches/01..08; no upstream PR).
 
+diff --git c/skills/babysit-pr/SKILL.md w/skills/babysit-pr/SKILL.md
+index be160f1..e06c36f 100644
+--- c/skills/babysit-pr/SKILL.md
++++ w/skills/babysit-pr/SKILL.md
+@@ -116,3 +116,9 @@ otherwise report that the PR is ready. Right before a merge, run `git fetch` and
+ check the PR again. Never merge when it is BEHIND or DIRTY, or when base commits
+ that landed after the last green run touch this PR's files. Rebase, push, and
+ wait for green again.
++
++In T3 Code, once you merge every owned PR and no open PR, blocker, or pin
++remains (check `t3_thread_list` for `pinned`), settle this thread last
++(`t3_thread_organize`, `action: "settle"`, no `threadId`) unless a parent
++workflow such as `epic` owns this thread's settle; delegated children never
++settle. If you stop without merging, leave the thread unsettled.
 diff --git c/skills/full-send/SKILL.md w/skills/full-send/SKILL.md
 index cfee388..341d102 100644
 --- c/skills/full-send/SKILL.md

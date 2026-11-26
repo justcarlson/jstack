@@ -116,3 +116,9 @@ otherwise report that the PR is ready. Right before a merge, run `git fetch` and
 check the PR again. Never merge when it is BEHIND or DIRTY, or when base commits
 that landed after the last green run touch this PR's files. Rebase, push, and
 wait for green again.
+
+In T3 Code, once you merge every owned PR and no open PR, blocker, or pin
+remains (check `t3_thread_list` for `pinned`), settle this thread last
+(`t3_thread_organize`, `action: "settle"`, no `threadId`) unless a parent
+workflow such as `epic` owns this thread's settle; delegated children never
+settle. If you stop without merging, leave the thread unsettled.
