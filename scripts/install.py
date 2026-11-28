@@ -44,7 +44,7 @@ COPY_IGNORE = ("__pycache__", "*.py[cod]", ".DS_Store")
 
 # Sibling skills each skill calls. Resolved transitively.
 DEPS: dict[str, tuple[str, ...]] = {
-    "full-send": ("sol-loop", "file-pr", "babysit-pr", "leaving-pr-comments", "pr"),
+    "full-send": ("sol-loop", "file-pr", "babysit-pr", "leaving-pr-comments", "pr", "prove"),
     "full-stop": ("full-send",),
     "file-pr": ("babysit-pr", "leaving-pr-comments"),
     "babysit-pr": ("leaving-pr-comments",),
@@ -53,6 +53,7 @@ DEPS: dict[str, tuple[str, ...]] = {
     "bug": ("council", "leaving-pr-comments"),
     "epic": (
         "full-send",
+        "prove",
         "council",
         "sol-loop",
         "file-pr",
