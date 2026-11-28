@@ -1,7 +1,7 @@
 {
   "name": "jstack",
   "version": "0.4.0",
-  "description": "18 agent skills for shipping pull requests: patched t3dotgg/tstack core, the pr body standard, and companions.",
+  "description": "20 agent skills for shipping pull requests: patched t3dotgg/tstack core, the pr body standard, and companions.",
   "author": {
     "name": "justcarlson"
   },

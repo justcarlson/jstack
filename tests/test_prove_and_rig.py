@@ -102,7 +102,7 @@ def test_lifecycle_passes_and_prints_markdown(work: Path):
     assert ver.returncode == 0 and "verified" in ver.stdout
     md = pp(work, "verify", "--markdown", rig=rig)
     assert md.returncode == 0
-    assert "## Proof packet" in md.stdout and "PASS" in md.stdout and "| s1 | L1 |" in md.stdout and "| a1 | L3 |" in md.stdout
+    assert "### Proof packet" in md.stdout and "PASS" in md.stdout and "| s1 | L1 |" in md.stdout and "| a1 | L3 |" in md.stdout
 
 
 def test_stale_head_is_rejected(work: Path):

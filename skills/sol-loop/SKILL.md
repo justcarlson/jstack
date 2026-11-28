@@ -41,7 +41,8 @@ Find the base after `git fetch origin`:
 
 The change is base to working tree in those paths, with untracked files.
 Use one diff command all rounds. State intent and out-of-scope in 1-2
-sentences. Run covering checks; note missing or pre-failing ones in the brief.
+sentences. Run covering checks; do not send code this change breaks. Note
+missing or pre-failing checks.
 
 ## 2. Start Sol
 
@@ -65,15 +66,15 @@ Round 1 brief (T3 children get no history):
 
 ```
 Review only. Do not edit, commit, push, comment on PRs, or start subagents.
-Repo: <abs path> Base: <sha> Scratch: <dir outside the repo> Intent: <intent> Out of scope: <scope> Checks: <results>
-Proof: <proof packet path>
+Repo: <abs path> Base: <sha> Scratch: <dir outside repo> Intent: <intent> Out of scope: <scope> Checks: <results>
+Proof: <packet path>
 See: git diff <base> [-- <paths>]; git status --short (read untracked).
 Read surrounding code. Find bugs, broken callers, mismatch with intent.
 Skip style unless it hides a bug. Hold to the smallest change. Flag code,
 tests, or guards the intent does not need. Other paths, rare cases, small
 perf, extra compat: nits.
-Missing, stale, or mocked proof of testable runtime, UI, or ops behavior: blocker.
-If you reproduce a finding, save a runnable script in Scratch (the only place you may write) and give its path.
+Missing, stale, or mocked proof of testable behavior: blocker.
+Save any repro script in Scratch (the only writable dir) and give its path.
 blocker = intended case wrong. should = real bug callers will hit, in intent. nit = rest.
 Reply:
 VERDICT: APPROVE or CHANGES

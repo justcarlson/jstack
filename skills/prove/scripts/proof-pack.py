@@ -517,7 +517,7 @@ def cell(text: object, limit: int = 90) -> str:
 def markdown(report: dict) -> str:
     status = "PASS" if report["ok"] else "FAIL"
     lines = [
-        "## Proof packet",
+        "### Proof packet",
         "",
         f"**Task:** {cell(report['task'], 200)}",
         f"**Head:** `{short(report['head'])}` · **Level:** {report['reached'] or 'none'} reached, {report['required']} required · **{status}**",

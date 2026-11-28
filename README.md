@@ -34,7 +34,7 @@ cd jstack
 | `antigravity` | `~/.gemini/config/skills` (plus real `~/.t3/userdata/providers/antigravity/*/config/skills` folders) | `~/.gemini` or T3's `~/.t3/userdata/providers/antigravity` |
 | `opencode` | `$XDG_CONFIG_HOME/opencode/skills` (default `~/.config/opencode/skills`) | `$XDG_CONFIG_HOME/opencode` or `~/.config/opencode` |
 
-`--only` adds the sibling skills a skill calls, so `--only full-send` also installs `sol-loop`, `file-pr`, `babysit-pr`, `leaving-pr-comments` and `pr`. Pass `--no-deps` to skip them, or `--mode copy` to copy instead of link (pair `--check` with `--mode copy` when checking copies). The installer needs only Python 3 and puts nothing on your `$PATH`.
+`--only` adds the sibling skills a skill calls, so `--only full-send` also installs `prove`, `sol-loop`, `file-pr`, `babysit-pr`, `leaving-pr-comments` and `pr`. Pass `--no-deps` to skip them, or `--mode copy` to copy instead of link (pair `--check` with `--mode copy` when checking copies). The installer needs only Python 3 and puts nothing on your `$PATH`.
 
 As a plugin:
 
