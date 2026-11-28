@@ -86,6 +86,7 @@ The nine tstack skills, patched. [UPSTREAM.md](UPSTREAM.md) pins the upstream co
 | `bug` | Take an upstream bug from first error to a merged fix |
 | `omarchy-dev` | Test Omarchy changes in throwaway Omarchy VMs, the way upstream does |
 | `t3-launch-worktrees` | Launch T3 Code threads in the right checkout |
+| `oc-sandbox` | Lease a throwaway OpenCode sandbox for risky or custom work delegated through T3 Code |
 
 ## Make them yours
 

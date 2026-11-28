@@ -38,8 +38,8 @@ def entries(folder: Path) -> list[str]:
     return sorted(p.name for p in folder.iterdir()) if folder.exists() else []
 
 
-def test_seventeen_skills_and_deps_exist():
-    assert len(ALL) == 17
+def test_eighteen_skills_and_deps_exist():
+    assert len(ALL) == 18
     for name, deps in install.DEPS.items():
         assert name in ALL
         assert set(deps) <= set(ALL), name

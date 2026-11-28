@@ -1,7 +1,7 @@
 {
   "name": "jstack",
-  "version": "0.2.1",
-  "description": "17 agent skills for shipping pull requests: patched t3dotgg/tstack core, the pr body standard, and companions.",
+  "version": "0.3.0",
+  "description": "18 agent skills for shipping pull requests: patched t3dotgg/tstack core, the pr body standard, and companions.",
   "author": {
     "name": "justcarlson"
   },
@@ -13,7 +13,7 @@
   "interface": {
     "displayName": "jstack",
     "shortDescription": "Ship pull requests end to end: council, sol-loop, full-send, babysit-pr",
-    "longDescription": "A patched distribution of t3dotgg/tstack with companion skills for PR bodies, epics, retros, CI speed, upstream bugs, Omarchy VMs, and T3 worktree launches.",
+    "longDescription": "A patched distribution of t3dotgg/tstack with companion skills for PR bodies, epics, retros, CI speed, upstream bugs, Omarchy VMs, OpenCode sandboxes, and T3 worktree launches.",
     "developerName": "justcarlson",
     "category": "Developer Tools",
     "capabilities": ["Interactive", "Read", "Write"],
