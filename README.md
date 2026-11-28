@@ -82,6 +82,8 @@ The nine tstack skills, patched. [UPSTREAM.md](UPSTREAM.md) pins the upstream co
 | `epic` | Plan and ship multi-issue or multi-repo work, from options to live proof |
 | `hindsight` | Find agent mistakes that repeat across sessions and fix each at its source |
 | `hindsight-setup` | Choose which agent logs `hindsight` reads |
+| `prove` | Prove a change works with an L0-L4 evidence ladder and a mechanical proof packet |
+| `jstack-setup` | Describe your local tools and fallback model once, and render them into deployed skills |
 | `ci-retro` | Make CI faster from its own run history |
 | `bug` | Take an upstream bug from first error to a merged fix |
 | `omarchy-dev` | Test Omarchy changes in throwaway Omarchy VMs, the way upstream does |
@@ -94,6 +96,16 @@ The skills name no models, hosts or private paths. Put those in your own instruc
 
 - Put your model roster in `AGENTS.md` or `CLAUDE.md`, for example the three `council` members and the `sol-loop` reviewer. The skills use the models you name there.
 - Run `hindsight-setup` once. It writes `~/.config/hindsight/sources.json`, which tells `hindsight` which harness logs and stores to read.
+- Run `jstack-setup` once. It writes `~/.config/jstack/rig.json` (mode 0600, names only, never committed), and `./install.sh --reconcile` renders it into deployed skills such as `prove`. [rig.example.json](rig.example.json) shows the shape. Without a rig, installs stay stock.
+
+Paste this into your agent to do it all:
+
+```text
+Install jstack from github.com/justcarlson/jstack with ./install.sh.
+Run the jstack-setup skill: inventory my tools, show the table, ask once, write ~/.config/jstack/rig.json.
+Run ./install.sh --reconcile, then ./install.sh --check and jstack-rig.py check until both pass.
+Then run hindsight-setup. Keep secrets and private hostnames out of any repo.
+```
 
 ## Development
 

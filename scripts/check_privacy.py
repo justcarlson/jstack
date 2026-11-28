@@ -33,6 +33,7 @@ MARKERS: list[tuple[str, re.Pattern[str]]] = [
     ("CGNAT address", re.compile(r"(?<![\d.])100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}(?!\d|\.\d)")),
 ]
 SAFE_ENV_SUFFIXES = (".example", ".sample", ".template")
+PRIVATE_CONFIG_FILES = frozenset({"rig.json", "profile.toml"})
 
 
 def forbidden_file(path: str) -> str | None:
@@ -47,6 +48,10 @@ def forbidden_file(path: str) -> str | None:
             return f"secret file ({prefix})"
     if name in (".netrc", ".npmrc"):
         return f"secret file ({name})"
+    # Personal rig and profile files hold local tool names and endpoints.
+    # Names like rig.example.json are different names and stay allowed.
+    if name in PRIVATE_CONFIG_FILES:
+        return f"private config file ({name})"
     return None
 
 

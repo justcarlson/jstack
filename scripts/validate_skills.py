@@ -237,6 +237,34 @@ def check_links(skill: Path, deps: tuple[str, ...] = ()) -> list[str]:
     return errors
 
 
+SLOT_TAG = re.compile(r"<!-- (/?)jstack:slot:([A-Za-z0-9_-]+) -->")
+SLOT_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*\Z")
+
+
+def check_slots(skill: Path) -> list[str]:
+    """Rig slots in SKILL.md must be named in lowercase and opened and closed in matching pairs."""
+    text = (skill / "SKILL.md").read_text(encoding="utf-8")
+    rel = f"skills/{skill.name}/SKILL.md"
+    errors: list[str] = []
+    opened: str | None = None
+    for closing, name in SLOT_TAG.findall(text):
+        if not SLOT_NAME.match(name):
+            errors.append(f"{rel}: slot name {name!r} must be lowercase letters, digits and hyphens")
+        if closing:
+            if opened != name:
+                errors.append(f"{rel}: closing slot {name!r} does not match open slot {opened!r}")
+                opened = None
+            else:
+                opened = None
+        else:
+            if opened is not None:
+                errors.append(f"{rel}: slot {name!r} opened while {opened!r} is still open")
+            opened = name
+    if opened is not None:
+        errors.append(f"{rel}: unclosed slot {opened!r}")
+    return errors
+
+
 def manifest_versions(root: Path) -> dict[str, str]:
     out = {}
     for rel in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json"):
@@ -337,6 +365,7 @@ def validate(root: Path) -> list[str]:
         if not isinstance(desc, str) or not desc.strip():
             errors.append(f"{rel}: description must be a non-empty string")
         errors.extend(check_links(d, deps.get(d.name, ())))
+        errors.extend(check_slots(d))
         if f"`{d.name}`" not in readme:
             errors.append(f"README.md: skill `{d.name}` is not listed")
     errors.extend(check_manifests(root))

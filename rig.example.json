@@ -1,0 +1,23 @@
+{
+  "schema": "jstack.rig/1",
+  "harnesses": ["<harness>"],
+  "endpoints": {
+    "ollama": "http://127.0.0.1:<port>"
+  },
+  "lanes": {
+    "web": ["<browser-tool>"],
+    "auth": ["<otp-tool>"],
+    "native_gui": ["<gui-driver>", "<screenshot-tool>"],
+    "vnc": ["<vnc-viewer>"],
+    "video": ["<recorder>", "<video-tool>"],
+    "audio": ["<asr-tool>"],
+    "vm": ["<vm-tool>"],
+    "ssh": ["<ssh-tool>"],
+    "secrets": ["<secret-manager>"]
+  },
+  "media_uploader": "<uploader-command>",
+  "fallback": {
+    "provider": "<provider>",
+    "model": "<model>"
+  }
+}

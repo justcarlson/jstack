@@ -53,7 +53,7 @@ def errors(root: Path) -> list[str]:
 
 def test_repo_is_valid():
     assert vs.validate(ROOT) == []
-    assert len(vs.skill_dirs(ROOT)) == 18
+    assert len(vs.skill_dirs(ROOT)) == 20
 
 
 def test_cli_ok():
@@ -61,7 +61,7 @@ def test_cli_ok():
         [sys.executable, str(ROOT / "scripts" / "validate_skills.py")], capture_output=True, text=True, check=False
     )
     assert proc.returncode == 0, proc.stderr
-    assert "18 skills valid" in proc.stdout
+    assert "20 skills valid" in proc.stdout
 
 
 def test_parser_matches_pyyaml():
