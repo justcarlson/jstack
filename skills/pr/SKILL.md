@@ -165,6 +165,8 @@ Concrete evidence that the change works. Show a before and after.
 
 Screenshots are S-tier - when the environment is set up for it and the change is visual.
 
+When a `prove` packet exists, run `proof-pack.py verify --markdown` and paste its output into Evidence rather than retyping it. Upload attached screenshots or media with the rig's configured media uploader and link them under `**Before:**` / `**After:**`. Keep the three headings above exactly; `templates/pr-body.yml` checks them.
+
 Execution-based evidence is A-tier. Test results, console output. Show the exact test that now fails and passes, using pseudocode.
 
 ### Merge Danger

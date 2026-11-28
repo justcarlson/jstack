@@ -47,7 +47,7 @@ def test_twenty_skills_and_deps_exist():
 
 def test_resolve_is_transitive():
     assert install.resolve(["full-stop"]) == sorted(
-        {"full-stop", "full-send", "sol-loop", "file-pr", "babysit-pr", "leaving-pr-comments", "pr"}
+        {"full-stop", "full-send", "sol-loop", "file-pr", "babysit-pr", "leaving-pr-comments", "pr", "prove"}
     )
     assert install.resolve(["file-pr"]) == ["babysit-pr", "file-pr", "leaving-pr-comments"]
     assert install.resolve(["babysit-pr"]) == ["babysit-pr", "leaving-pr-comments"]
@@ -55,7 +55,7 @@ def test_resolve_is_transitive():
     assert install.resolve(["hindsight-setup"]) == ["hindsight", "hindsight-setup"]
     assert install.resolve(["full-stop"], with_deps=False) == ["full-stop"]
     epic = install.resolve(["epic"])
-    assert {"full-send", "council", "hindsight", "t3-launch-worktrees", "pr"} <= set(epic)
+    assert {"full-send", "prove", "council", "hindsight", "t3-launch-worktrees", "pr"} <= set(epic)
 
 
 def test_resolve_rejects_unknown():
@@ -95,7 +95,7 @@ def test_copy_mode_writes_marker(home: Path):
 def test_only_adds_deps(home: Path, capsys):
     assert run(home, "--client", "claude", "--only", "full-send") == 0
     assert entries(home / ".claude" / "skills") == sorted(
-        ["full-send", "sol-loop", "file-pr", "babysit-pr", "leaving-pr-comments", "pr"]
+        ["full-send", "sol-loop", "file-pr", "babysit-pr", "leaving-pr-comments", "pr", "prove"]
     )
     assert "adding dependencies" in capsys.readouterr().out
 

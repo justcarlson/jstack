@@ -6,17 +6,11 @@
   },
   "grandfathered": {
     "epic": {
-      "body_bytes": 8326
-    },
-    "full-send": {
-      "body_bytes": 6428
+      "body_bytes": 8076
     },
     "omarchy-dev": {
       "description_bytes": 380,
       "body_bytes": 7929
-    },
-    "sol-loop": {
-      "body_bytes": 6346
     }
   }
 }

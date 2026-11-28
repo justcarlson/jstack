@@ -26,7 +26,8 @@ report it instead of substituting.
 
 Give each delegate the user's request as given, including any lead the user
 offers, and the context it needs: the diff or files, the intent, the scope,
-and check results. For review or feedback, keep their work read-only. Tell
+and check results. Include the `proof-pack.py` packet path and its artifacts
+when proof exists. For review or feedback, keep their work read-only. Tell
 each delegate not to start subagents or delegates of its own. Collect their
 responses and summarize the useful findings, disagreements, and recommended
 next steps.
@@ -37,8 +38,9 @@ files while a delegate still reviews the same checkout. If the user's
 instructions mark a delegate as non-blocking, do not wait for it; treat a
 late result as feedback and do not record its score.
 
-For a code review, ask each delegate for a score out of 10.
-Count each full review pass as one round.
+For a code review, ask each delegate for a score out of 10. Tell them to score
+at most 6/10, with an in-scope blocker, when testable behavior has no direct
+proof (missing, stale, or mocked). Count each full review pass as one round.
 A fresh review after fixes starts a new round. Start each round with a new
 delegate per member. In T3 Code that is a new `delegate_task`, and elsewhere
 a new subagent. Brief the new delegate as in round 1, with the current diff.

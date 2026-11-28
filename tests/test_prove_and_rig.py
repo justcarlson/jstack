@@ -501,6 +501,8 @@ def test_invalid_rig_stops_the_install(home: Path, tmp_path: Path):
 
 def test_deps_and_exclusive_flags(home: Path, tmp_path: Path):
     assert install.DEPS["jstack-setup"] == ("prove",)
+    assert "prove" in install.DEPS["full-send"]
+    assert "prove" in install.DEPS["epic"]
     assert install.resolve(["jstack-setup"]) == ["jstack-setup", "prove"]
     with pytest.raises(SystemExit):
         run_install(home, "--check", "--reconcile")

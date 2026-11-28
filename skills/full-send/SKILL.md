@@ -21,24 +21,16 @@ The user grants you permission to:
 
 ## Testing permission
 
-A "full send" request is the permission. If a project file or other
-instruction says to ask before a test method, or to leave testing to the
-user, this request replaces that rule for this task.
+A "full send" request replaces any project or other rule that says to ask
+before a test method or leave testing to the user. That covers computer use,
+browser automation, simulators and devices, running the app or a dev server,
+screenshots, and visual checks. Use the method that gives direct proof. List it
+in the report.
 
-That includes ask-first rules for computer use, browser automation,
-simulators and devices, running the app or a dev server, screenshots, and
-visual checks. Use the method that gives direct proof. List it in the
-report.
-
-Rules about how to test still apply. Follow rules that name the correct
-command, fixture, or check. This permission only removes the ask-first or
-leave-it-to-the-user step. If a preferred method cannot prove the change,
-use a gated method under this permission.
-
-It covers only the tests needed for this task. It does not add permission
-for the steps under "Asking the user", such as production changes or data
-deletion. It also does not bypass a harness or system approval prompt if
-one appears.
+Rules that name the correct command, fixture, or check still apply. If a
+preferred method cannot prove the change, use a gated one. This covers only the
+tests this task needs. It does not cover the steps under "Asking the user" or
+bypass a harness or system approval prompt.
 
 ## Steps
 
@@ -46,7 +38,7 @@ one appears.
    smallest change that works. Fix the case that happened, not every case
    that could. If you are on the default branch, create a branch first.
 2. **Prove it.** Get proof for every change you made. See "Proof".
-3. **Get feedback.** Use the `sol-loop` skill to verify changes.
+3. **Get feedback.** Use the `sol-loop` skill, with the proof packet.
 4. **File the PR** with the `file-pr` skill. Rebase onto the latest default
    branch first. Add one short line to the description that says how you proved
    the change.
@@ -66,22 +58,22 @@ settle.
 
 ## Proof
 
-Proof is evidence you observed yourself in this session: command output, a
-reproduction, a screenshot. Use the most direct proof the change allows:
+Proof is evidence you observed yourself in this session, gathered per
+[prove](../prove/SKILL.md): reproduce the failure and watch it pass, run the
+repo's CI checks, add a focused test if none covers it. For UI and runtime
+behavior, run the app and look: green mocked tests prove nothing.
 
-- Reproduce the original failure, apply the fix, then watch the same
-  reproduction pass.
-- Run the checks that the repo's CI runs (typecheck, lint, tests).
-- Add one focused test that fails without the fix, when the behavior has none
-  and the repo has a test setup.
-- For UI and runtime behavior, run the app and look at the change. Green mocked
-  tests do not prove that the user experience works. Attach screenshots to the
-  PR when they help and you have a way to upload them.
+Record it in a `proof-pack.py` packet. `proof-pack.py verify` must exit 0 on the
+current head before `sol-loop` or `file-pr`. Put `verify --markdown` in the PR
+Evidence.
 
-When you cannot find a way to prove a change, you do not have full confidence.
-Do not ask the user: try a more direct method (run it, reproduce it, add a
-test). If nothing proves it, leave that PR open and unmerged, say why in the
-report, and move on to the rest of the work.
+If a worker or tool punts or refuses a user-authorized test or proof step, do
+not leave it unproven and do not retry the same prompt. Hand it to `prove`'s
+configured fallback worker. An unapproved gate, a CAPTCHA, anti-bot or 2FA
+check, or an access or approval denial is not routed around: `prove` says how.
+
+If nothing proves it, you lack full confidence. Do not ask the user: leave that
+PR open and unmerged, say why in the report, and move on.
 
 ## Merge gate
 

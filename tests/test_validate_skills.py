@@ -159,7 +159,7 @@ def test_manifest_version_mismatch(repo: Path):
 
 
 def test_manifests_share_version():
-    assert set(vs.manifest_versions(ROOT).values()) == {"0.3.0"}
+    assert set(vs.manifest_versions(ROOT).values()) == {"0.4.0"}
 
 
 def test_pr_body_workflow_must_match(repo: Path):
@@ -225,9 +225,9 @@ def test_long_description_fails(repo: Path):
 
 
 def test_shrink_requires_ratchet(repo: Path):
-    p = repo / "skills/sol-loop/SKILL.md"
+    p = repo / "skills/epic/SKILL.md"
     p.write_text(p.read_text()[:-10])
-    assert any("sol-loop.body_bytes shrank" in e for e in errors(repo))
+    assert any("epic.body_bytes shrank" in e for e in errors(repo))
     assert vs.main(["--root", str(repo), "--write-budget"]) == 0
     assert errors(repo) == []
 
