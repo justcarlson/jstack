@@ -53,7 +53,7 @@ def errors(root: Path) -> list[str]:
 
 def test_repo_is_valid():
     assert vs.validate(ROOT) == []
-    assert len(vs.skill_dirs(ROOT)) == 17
+    assert len(vs.skill_dirs(ROOT)) == 18
 
 
 def test_cli_ok():
@@ -61,7 +61,7 @@ def test_cli_ok():
         [sys.executable, str(ROOT / "scripts" / "validate_skills.py")], capture_output=True, text=True, check=False
     )
     assert proc.returncode == 0, proc.stderr
-    assert "17 skills valid" in proc.stdout
+    assert "18 skills valid" in proc.stdout
 
 
 def test_parser_matches_pyyaml():
@@ -159,7 +159,7 @@ def test_manifest_version_mismatch(repo: Path):
 
 
 def test_manifests_share_version():
-    assert set(vs.manifest_versions(ROOT).values()) == {"0.2.1"}
+    assert set(vs.manifest_versions(ROOT).values()) == {"0.3.0"}
 
 
 def test_pr_body_workflow_must_match(repo: Path):
